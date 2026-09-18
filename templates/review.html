@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}{{ t("review_report") }} · {{ partner.name }}{% endblock %}
+{% block content %}
+<section class="review-page">
+  <div class="section-head">
+    <div>
+      <p class="eyebrow">{{ t("review_page_eyebrow") }}</p>
+      <h1>{{ t("review_report") }}</h1>
+      <p>{{ t("review_intro") }}</p>
+    </div>
+    <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_another") }}</a>
+  </div>
+
+  {% if form_error %}
+  <div class="notice error">{{ t(form_error) }}</div>
+  {% endif %}
+
+  <form method="post" action="/submit/{{ partner.token }}/confirm/{{ draft.token }}" class="review-form-shell">
+    <nav class="tabs" data-tabs>
+      <button type="button" class="{{ 'active' if active_tab == 'summary' else '' }}" data-tab="summary">{{ t("tab_review_summary") }}</button>
+      <button type="button" class="{{ 'active' if active_tab == 'differences' else '' }}" data-tab="differences">
+        {{ t("tab_review_differences") }}
+        {% if required_discrepancies %}
+        <span class="tag">{{ required_discrepancies|length }}</span>
+        {% endif %}
+      </button>
+    </nav>
+
+    <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
+      {% set reported_count = draft.location_ids|length %}
+      {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
+      {% set counts_match = snapshot_ready and reported_count == active_count %}
+
+      <section class="review-source review-source-file">
+        <header class="review-source-head">
+          <p class="eyebrow">{{ t("review_from_your_report") }}</p>
+          <h2>{{ t("review_from_your_report_title") }}</h2>
+          <p>{{ t("review_from_your_report_hint") }}</p>
+        </header>
+        <section class="stats review-file-stats">
+          <article>
+            <strong>{{ reported_count }}</strong>
+            <span>{{ t("detected_clients") }}</span>
+            <small>{{ t("source_in_report") }}</small>
+          </article>
+        </section>
+        <div class="field-grid">
+          <div class="field grow read-only-count">
+            <label>{{ t("turnover") }}</label>
+            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %}</strong>
+          </div>
+          <div class="field compact read-only-count">
+            <label>{{ t("currency") }}</label>
+            <strong>{{ draft.currency or "—" }}</strong>
+          </div>
+        </div>
+        <div class="field-grid">
+          <div class="field grow read-only-count">
+            <label>{{ t("share_due") }}</label>
+            <strong>{% if draft.reported_share is not none %}{{ draft.reported_share }}{% else %}—{% endif %}</strong>
+          </div>
+        </div>
+        <details class="ids-details">
+          <summary>{{ t("client_ids_details") }}: {{ reported_count }}</summary>
+          {% if draft.location_ids %}
+          <ul class="id-chip-list">
+            {% for location_id in draft.location_ids %}
+            <li>{{ location_id }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="hint">{{ t("ids_not_in_file") }}</p>
+          {% endif %}
+        </details>
+      </section>
+
+      <section class="review-source review-source-check">
+        <header class="review-source-head">
+          <p class="eyebrow">{{ t("review_our_check") }}</p>
+          <h2>{{ t("review_our_check_title") }}</h2>
+          <p>{{ t("review_our_check_hint") }}</p>
+        </header>
+        {% if not snapshot_ready %}
+        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
+        {% else %}
+        <div class="review-compare {{ 'is-match' if counts_match else 'is-mismatch' }}">
+          <div class="review-compare-pair">
+            <div>
+              <span>{{ t("compare_in_report") }}</span>
+              <strong>{{ reported_count }}</strong>
+            </div>
+            <div>
+              <span>{{ t("compare_active") }}</span>
+              <strong>{{ active_count }}</strong>
+            </div>
+          </div>
+          {% if counts_match %}
+          <p>{{ t("counts_match", reported=reported_count, active=active_count) }}</p>
+          {% else %}
+          <p>{{ t("counts_mismatch", reported=reported_count, active=active_count) }}</p>
+          <button class="button secondary" type="button" data-open-tab="differences">{{ t("open_differences_tab") }}</button>
+          {% endif %}
+        </div>
+        {% endif %}
+        <section class="stats review-check-stats">
+          <article class="is-primary">
+            <strong>{{ active_count if snapshot_ready else "—" }}</strong>
+            <span>{{ t("active_during_month") }}</span>
+            <small>{{ t("active_during_month_hint") }}</small>
+          </article>
+          <article>
+            <strong>{{ connected_count if snapshot_ready else "—" }}</strong>
+            <span>{{ t("connected_month_end") }}</span>
+            <small>{{ t("connected_month_end_hint") }}</small>
+          </article>
+          <article>
+            <strong>{{ (partner.rate * 100)|round(2) if partner.rate is not none else "—" }}{% if partner.rate is not none %}%{% endif %}</strong>
+            <span>{{ t("contract_rate") }}</span>
+            <small>{{ t("source_our_check") }}</small>
+          </article>
+        </section>
+      </section>
+
+      <div class="field">
+        <label for="comment">{{ t("comment") }} <span>{{ t("optional") }}</span></label>
+        <textarea id="comment" name="comment" rows="3" placeholder="{{ t('comment_placeholder') }}">{{ comment|default("") }}</textarea>
+      </div>
+      <p class="privacy">{{ t("review_values_hint") }}</p>
+      {% if required_discrepancies %}
+      <p class="hint">{{ t("review_switch_to_differences") }}</p>
+      {% endif %}
+      <button class="button full" type="submit">{{ t("confirm_submit") }}</button>
+    </section>
+
+    <section class="card review-form tab-panel {{ 'active' if active_tab == 'differences' else '' }}" data-panel="differences">
+      {% if required_discrepancies or optional_discrepancies %}
+        {% if check.missing_active %}
+        <div class="notice warning">{{ t("difference_found") }}</div>
+        <section class="next-steps">
+          <h2>{{ t("difference_next_steps") }}</h2>
+          <ol>
+            <li>{{ t("difference_step_download") }}</li>
+            <li>{{ t("difference_step_check") }}</li>
+            <li>{{ t("difference_step_correct") }}</li>
+            <li>{{ t("difference_step_explain") }}</li>
+          </ol>
+          <div class="form-actions">
+            <a class="button secondary" href="/submit/{{ partner.token }}/review/{{ draft.token }}/differences.csv">{{ t("download_differences") }}</a>
+            <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_corrected_report") }}</a>
+          </div>
+          <p class="hint">{{ t("difference_return_hint") }}</p>
+        </section>
+        {% endif %}
+
+        {% if required_discrepancies %}
+        <section class="claim-section">
+          <h2>{{ t("explain_differences") }}</h2>
+          <p>{{ t("explain_differences_hint") }}</p>
+          <div class="claim-list">
+            {% for item in required_discrepancies %}
+            <article class="claim-card">
+              <div class="claim-heading">
+                <strong>Location ID {{ item.location_id }}</strong>
+                <span>{{ t(item.kind) }}</span>
+              </div>
+              <input type="hidden" name="claim_location" value="{{ item.location_id }}">
+              <input type="hidden" name="claim_kind" value="{{ item.kind }}">
+              <div class="field">
+                <label for="reason-{{ loop.index }}">{{ t("reason_label") }}</label>
+                <select id="reason-{{ loop.index }}" name="claim_reason" required>
+                  <option value="">{{ t("select_reason") }}</option>
+                  {% for reason in ["no_payment", "free_trial", "pay_next_month", "disconnected_before_month", "connected_after_month", "file_error", "other"] %}
+                  <option value="{{ reason }}" {% if item.selected_reason|default("") == reason %}selected{% endif %}>{{ t("claim_" ~ reason) }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="detail-{{ loop.index }}">{{ t("details") }} <span>{{ t("required_for_other") }}</span></label>
+                <textarea id="detail-{{ loop.index }}" name="claim_detail" rows="2">{{ item.selected_detail|default("") }}</textarea>
+              </div>
+            </article>
+            {% endfor %}
+          </div>
+        </section>
+        {% endif %}
+
+        {% if optional_discrepancies %}
+        <section class="idle-section">
+          <h2>{{ t("idle_installs", count=optional_discrepancies|length) }}</h2>
+          <p class="hint">{{ t("idle_installs_hint") }}</p>
+          <ul class="id-chip-list">
+            {% for item in optional_discrepancies[:12] %}
+            <li>{{ item.location_id }}</li>
+            {% endfor %}
+            {% if optional_discrepancies|length > 12 %}
+            <li class="muted-chip">+{{ optional_discrepancies|length - 12 }}</li>
+            {% endif %}
+          </ul>
+          <p class="hint">
+            <a class="text-link" href="/submit/{{ partner.token }}/review/{{ draft.token }}/differences.csv?kind=connected">{{ t("download_idle_installs") }}</a>
+          </p>
+          {% if long_idle %}
+          <div class="long-idle">
+            <strong>{{ t("long_idle_installs", count=long_idle|length, months=idle_months_threshold, word=months_word(idle_months_threshold)) }}</strong>
+            <p class="hint">{{ t("long_idle_installs_hint") }}</p>
+            <ul class="id-chip-list">
+              {% for item in long_idle[:12] %}
+              <li>{{ item.location_id }} · {{ item.months }} {{ months_word(item.months) }}</li>
+              {% endfor %}
+              {% if long_idle|length > 12 %}
+              <li class="muted-chip">+{{ long_idle|length - 12 }}</li>
+              {% endif %}
+            </ul>
+            <p class="hint">
+              <a class="text-link" href="/submit/{{ partner.token }}/review/{{ draft.token }}/differences.csv?kind=disconnect">{{ t("download_long_idle") }}</a>
+            </p>
+          </div>
+          {% endif %}
+          <label class="check-row">
+            <input type="radio" name="idle_declaration" value="no_payment" {% if idle_declaration|default("") == "no_payment" %}checked{% endif %}>
+            <span>{{ t("idle_declare_no_payment") }}</span>
+          </label>
+          <label class="check-row">
+            <input type="radio" name="idle_declaration" value="some_pay" {% if idle_declaration|default("") == "some_pay" %}checked{% endif %}>
+            <span>{{ t("idle_declare_some_pay") }}</span>
+          </label>
+          <p class="hint">{{ t("idle_declare_hint") }}</p>
+        </section>
+        {% endif %}
+      {% else %}
+        <div class="notice neutral">{{ t("review_no_differences") }}</div>
+      {% endif %}
+
+      <button class="button full" type="submit">{{ t("confirm_submit") }}</button>
+    </section>
+  </form>
+</section>
+{% endblock %}

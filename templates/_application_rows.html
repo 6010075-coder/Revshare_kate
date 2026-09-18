@@ -1,0 +1,48 @@
+<div class="repeat-list" data-repeat="applications">
+  {% if applications %}
+    {% for item in applications %}
+    <div class="repeat-row">
+      <div class="field grow">
+        <label>{{ t("application_url") }}</label>
+        <input name="application_url" type="url" value="{{ item.url }}" placeholder="https://">
+      </div>
+      <div class="field grow">
+        <label>{{ t("application_comment") }}</label>
+        <input name="application_comment" value="{{ item.comment }}" placeholder="{{ t('application_comment_placeholder') }}">
+      </div>
+      <div class="field grow">
+        <label>{{ t("category") }}</label>
+        <select name="application_category">
+          <option value="" {% if not item.category %}selected{% endif %}>{{ t("category_not_set") }}</option>
+          {% for value in app_categories %}
+          <option value="{{ value }}" {% if item.category == value %}selected{% endif %}>{{ t("category_" + value) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="icon-remove" type="button" aria-label="{{ t('remove_application') }}">✕</button>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="repeat-row">
+      <div class="field grow">
+        <label>{{ t("application_url") }}</label>
+        <input name="application_url" type="url" placeholder="https://">
+      </div>
+      <div class="field grow">
+        <label>{{ t("application_comment") }}</label>
+        <input name="application_comment" placeholder="{{ t('application_comment_placeholder') }}">
+      </div>
+      <div class="field grow">
+        <label>{{ t("category") }}</label>
+        <select name="application_category">
+          <option value="" selected>{{ t("category_not_set") }}</option>
+          {% for value in app_categories %}
+          <option value="{{ value }}">{{ t("category_" + value) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="icon-remove" type="button" aria-label="{{ t('remove_application') }}">✕</button>
+    </div>
+  {% endif %}
+</div>
+<button class="add-row" type="button" data-add="applications">+ {{ t("add_application") }}</button>

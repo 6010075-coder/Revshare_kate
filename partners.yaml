@@ -1,0 +1,50 @@
+# Registry of Integration Hub partners who send monthly revshare reports.
+# Fill aliases, expected currency, and sheet cell mapping as we process
+# the first real month. Do not invent rates or amounts.
+
+sheet:
+  id: "1GoEn9TiJHMI_7YQ9LkzBnLAoKRB_PvtnootyjQAta5A"
+  title: "Partnerships Altegio - Revenue Accrual"
+  url: "https://docs.google.com/spreadsheets/d/1GoEn9TiJHMI_7YQ9LkzBnLAoKRB_PvtnootyjQAta5A/edit?gid=671431539"
+  year_tabs:
+    2026:
+      title: "2026"
+      gid: 671431539
+    2025:
+      title: "2025"
+  related_tabs:
+    - Payments 2026
+    - PowerBI Data
+    - Contacts
+    - Superset Data
+
+# What we write by default: the partner-reported figure for the month.
+# Formulas in the sheet should keep calculating Altegio's share.
+# Never overwrite formula cells. Preview every write before applying.
+write_policy:
+  default_field: reported_turnover
+  preview_before_write: true
+  never_overwrite_formulas: true
+  approve_phrase: "вноси"
+
+deadline:
+  day_of_month: 10
+  reminder_day: 8
+
+# Add a partner the first time we successfully map them.
+# channel: email | telegram | file | number | mixed
+partners: []
+  # Example (do not use as live data):
+  # - id: example-app
+  #   name: Example App
+  #   aliases: ["example", "пример"]
+  #   channel: telegram
+  #   currency: USD
+  #   expected_by_day: 10
+  #   notes: "Sends Excel with a Total row. Enter turnover, not already-calculated share."
+  #   sheet:
+  #     year: 2026
+  #     row: null
+  #     month_columns:
+  #       1: null
+  #       2: null

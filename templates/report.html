@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}{{ report.partner_name }} · {{ report.period }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <p class="eyebrow">{{ report.period }}</p>
+    <h1>{{ report.partner_name }}</h1>
+    <p>
+      <span class="status {{ 'green' if report.workflow_status in ['approved', 'posted'] else 'yellow' }}">
+        {{ t("workflow_" + report.workflow_status) }}
+      </span>
+    </p>
+  </div>
+  <div class="form-actions">
+    {% if report.workflow_status == "approved" %}
+    <a class="button" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_confirm_send_link") }}</a>
+    {% elif report.workflow_status == "posted" %}
+    <a class="button secondary" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_open_queue") }}</a>
+    {% else %}
+    <form method="post" action="/reports/{{ report.id }}/approve">
+      <button class="button" type="submit">{{ t("approve_report") }}</button>
+    </form>
+    {% endif %}
+    <a class="button secondary" href="/?period={{ report.period }}">{{ t("back_dashboard") }}</a>
+  </div>
+</section>
+<section class="stats detail-stats">
+  <article>
+    <strong>{{ "{:,.2f}".format(report.turnover).replace(",", " ") }}</strong>
+    <span>{{ t("turnover") }}, {{ report.currency }}</span>
+    {% if report.currency != "USD" and report.turnover_usd is not none %}
+    <span>≈ {{ "{:,.2f}".format(report.turnover_usd).replace(",", " ") }} USD</span>
+    {% endif %}
+  </article>
+  <article><strong>{{ report.client_count }}</strong><span>{{ t("clients") }}</span></article>
+  <article>
+    <strong>{{ report.expected_share if report.expected_share is not none else "—" }}</strong>
+    <span>Revshare, {{ report.currency }}</span>
+    {% if report.currency != "USD" and report.share_usd is not none %}
+    <span>≈ {{ "{:,.2f}".format(report.share_usd).replace(",", " ") }} USD</span>
+    {% endif %}
+  </article>
+  <article><strong class="risk {{ report.risk_level }}">{{ report.risk_score }}/100</strong><span>{{ t("risk") }}</span></article>
+</section>
+<div class="two-columns review-columns">
+  <section class="card">
+    <h2>{{ t("reconciliation") }}</h2>
+    <ul class="reason-list">
+      {% for reason in report.reasons %}
+      <li>
+        {% if reason is mapping %}
+          {% if reason.count is defined %}
+            {{ t(reason.key, count=reason.count) }}
+          {% elif reason.expected is defined %}
+            {{ t(reason.key, expected=reason.expected, reported=reason.reported) }}
+          {% else %}
+            {{ t(reason.key) }}
+          {% endif %}
+        {% else %}
+          {{ t(reason) }}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if report.reported_share is not none %}
+    <div class="line-item">
+      <span>{{ t("partner_due") }}</span>
+      <strong>
+        {{ report.reported_share }} {{ report.currency }}
+        {% if report.currency != "USD" and report.reported_share_usd is not none %}
+        <small>≈ {{ "{:,.2f}".format(report.reported_share_usd).replace(",", " ") }} USD</small>
+        {% endif %}
+      </strong>
+    </div>
+    {% endif %}
+    {% if report.comment %}
+    <div class="comment"><span>{{ t("partner_comment") }}</span><p>{{ report.comment }}</p></div>
+    {% endif %}
+  </section>
+  <section class="card">
+    <h2>{{ t("discrepancies") }}</h2>
+    <div class="difference">
+      <span>{{ t("active_not_reported") }}</span>
+      <strong>{{ report.missing_active|length }}</strong>
+      <small>{{ report.missing_active|join(", ") or t("none") }}</small>
+    </div>
+    <div class="difference">
+      <span>{{ t("not_connected") }}</span>
+      <strong>{{ report.unknown_locations|length }}</strong>
+      <small>{{ report.unknown_locations|join(", ") or t("none") }}</small>
+    </div>
+    {% if report.idle_claims.total %}
+    <div class="difference">
+      <span>{{ t("idle_declared_no_payment") }}</span>
+      <strong>{{ report.idle_claims.total }}</strong>
+      <small>
+        {% if report.idle_claims.contradicted %}
+        {{ t("idle_payment_found", count=report.idle_claims.contradicted|length) }}:
+        {{ report.idle_claims.contradicted|join(", ") }}
+        {% else %}
+        {{ t("idle_candidates_for_disconnect") }}
+        {% endif %}
+      </small>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% if report.claims %}
+<section class="card claims-review">
+  <div class="section-head">
+    <div>
+      <h2>{{ t("partner_explanations") }}</h2>
+      <p>{{ t("independent_check_hint") }}</p>
+    </div>
+  </div>
+  <div class="claims-table">
+    {% for claim in report.claims %}
+    <article class="claim-result">
+      <div>
+        <strong>Location ID {{ claim.location_id }}</strong>
+        <span>{{ t(claim.kind) }}</span>
+      </div>
+      <div>
+        <small>{{ t("partner_reason") }}</small>
+        <strong>{{ t("claim_" ~ claim.reason) }}</strong>
+        {% if claim.detail %}<p>{{ claim.detail }}</p>{% endif %}
+      </div>
+      <div>
+        <span class="status evidence-{{ claim.verification_status }}">{{ t("verification_" ~ claim.verification_status) }}</span>
+        <small>{{ t("evidence_" ~ claim.verification_evidence) }}</small>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card report-versions">
+  <h2>{{ t("submission_history") }}</h2>
+  {% if report.status_log %}
+    {% for event in report.status_log %}
+    <div class="line-item">
+      <span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span>
+      <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
+    </div>
+    {% endfor %}
+  {% else %}
+    {% for version in report.versions %}
+    <div class="line-item">
+      <span>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</span>
+      <strong>{{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}</strong>
+    </div>
+    {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}
