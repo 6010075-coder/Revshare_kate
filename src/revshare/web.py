@@ -344,7 +344,12 @@ def create_app(
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
     admin_user = os.getenv("REVSHARE_ADMIN_USER", "kate").strip()
     admin_password = os.getenv("REVSHARE_ADMIN_PASSWORD", "").strip()
-    require_admin_auth = db_path is None if admin_auth is None else admin_auth
+    auth_override = os.getenv("REVSHARE_ADMIN_AUTH", "1").strip().lower()
+    require_admin_auth = (
+        db_path is None and auth_override not in {"0", "false", "no", "off"}
+        if admin_auth is None
+        else admin_auth
+    )
     csrf_enabled = require_admin_auth
     app.state.web_background_tasks = (
         os.getenv("REVSHARE_WEB_BACKGROUND_TASKS", "0").strip() == "1"

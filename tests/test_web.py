@@ -1288,6 +1288,14 @@ def test_admin_auth_fails_closed_without_password(tmp_path: Path, monkeypatch):
     assert client.get("/submit/demo-partner").status_code == 200
 
 
+def test_admin_auth_can_be_disabled_explicitly_for_local_preview(monkeypatch):
+    monkeypatch.setenv("REVSHARE_ADMIN_AUTH", "0")
+    monkeypatch.delenv("REVSHARE_ADMIN_PASSWORD", raising=False)
+    client = TestClient(create_app())
+
+    assert client.get("/").status_code == 200
+
+
 def test_admin_posts_require_csrf_token(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("REVSHARE_ADMIN_USER", "kate")
     monkeypatch.setenv("REVSHARE_ADMIN_PASSWORD", "secret")
