@@ -1235,7 +1235,7 @@ def create_app(
         name: str = Form(...),
         legal_name: str = Form(""),
         legal_country: str = Form(""),
-        altegio_legal_entity: str = Form(...),
+        altegio_legal_entity: str = Form(""),
         contact_name: str = Form(""),
         email: str = Form(""),
         telegram: str = Form(""),
@@ -1254,7 +1254,8 @@ def create_app(
         partner = app.state.store.partner(partner_id)
         if not partner or not partner["active"]:
             raise HTTPException(404, "Partner not found")
-        if altegio_legal_entity not in ALTEGIO_LEGAL_ENTITIES:
+        altegio_legal_entity = altegio_legal_entity.strip()
+        if altegio_legal_entity and altegio_legal_entity not in ALTEGIO_LEGAL_ENTITIES:
             raise HTTPException(422, "Invalid Altegio legal entity")
         if report_channel not in REPORT_CHANNELS:
             raise HTTPException(422, "Invalid report channel")

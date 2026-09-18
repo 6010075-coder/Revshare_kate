@@ -1475,6 +1475,39 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert client.get(f"/submit/{saved['token']}").status_code == 404
 
 
+def test_partner_can_be_saved_without_altegio_legal_entity(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+    client.post(
+        "/admin/partners",
+        data={"name": "Partner Without Entity", "legal_name": "Partner LLC", "rate": "15"},
+    )
+    partner = next(
+        row for row in app.state.store.partners() if row["name"] == "Partner Without Entity"
+    )
+
+    response = client.post(
+        f"/admin/partners/{partner['id']}/edit",
+        data={
+            "name": "Partner Without Entity Updated",
+            "legal_name": "Partner LLC",
+            "legal_country": "",
+            "report_channel": "email",
+            "email": "partner@example.com",
+            "telegram": "",
+            "application_url": "https://app.alteg.io/e/mp_38_assist/",
+            "application_comment": "",
+            "rate": "15",
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 200
+    saved = app.state.store.partner(partner["id"])
+    assert saved["name"] == "Partner Without Entity Updated"
+    assert saved["altegio_legal_entity"] == ""
+
+
 def test_partner_notice_exceptions_are_saved(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
