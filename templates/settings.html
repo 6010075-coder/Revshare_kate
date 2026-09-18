@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import period_select %}
+{% from "_macros.html" import csrf_field %}
 {% block title %}{{ t("settings") }} · {{ t("app_name") }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -22,6 +23,7 @@
 </nav>
 
 <form method="post" action="/admin/settings/general" class="card wide-form" id="general">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("settings_general") }}</h2>
   <p class="hint">{{ t("settings_general_hint") }}</p>
   <div class="field">
@@ -57,6 +59,7 @@
   </section>
 
   <form method="post" action="/admin/settings/altegio" class="altegio-threshold-form">
+    {{ csrf_field(csrf_token) }}
     <input type="hidden" name="period" value="{{ altegio_period }}">
     <div class="field compact">
       <label for="idle_months_threshold">{{ t("idle_months_threshold") }}</label>
@@ -70,6 +73,7 @@
   </form>
 
   <form method="post" action="/admin/settings/altegio/sync" class="altegio-sync-form">
+    {{ csrf_field(csrf_token) }}
     <h3>{{ t("sync_from_altegio") }}</h3>
     <p class="hint">{{ t("sync_from_altegio_hint") }}</p>
     {% if not altegio_mysql_ready and not sync_missing %}<p class="hint">{{ t("sync_from_altegio_missing") }}</p>{% endif %}
@@ -83,6 +87,7 @@
   </form>
 
   <form method="post" action="/admin/settings/altegio/import" enctype="multipart/form-data" class="altegio-import-form">
+    {{ csrf_field(csrf_token) }}
     <h3>{{ t("import_snapshot") }}</h3>
     <p class="hint">{{ t("import_snapshot_hint") }}</p>
     {% if import_error %}<div class="notice error">{{ t("import_snapshot_error") }}</div>{% endif %}
@@ -107,6 +112,7 @@
   {% if bot_ready %}
   <p class="hint">{{ t("telegram_delivery_intro") }}</p>
   <form method="post" action="/admin/settings/telegram">
+    {{ csrf_field(csrf_token) }}
     <div class="field">
       <label for="digest_chat">{{ t("digest_chat") }}</label>
       <input id="digest_chat" name="digest_chat" value="{{ digest_chat }}" placeholder="@username">
@@ -129,6 +135,7 @@
   {% endif %}
   {% if notices_ran %}<p class="hint">{{ t("notices_ran") }}</p>{% endif %}
   <form method="post" action="/admin/notices/run" class="form-actions">
+    {{ csrf_field(csrf_token) }}
     <button class="button secondary" type="submit">{{ t("run_due_notices") }}</button>
   </form>
   {% else %}
@@ -137,6 +144,7 @@
 </section>
 
 <form method="post" action="/admin/settings/schedule" class="card wide-form" id="schedule">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("notice_schedule") }}</h2>
   <p class="hint">{{ t("notice_schedule_intro") }}</p>
   <div class="schedule-preview">
@@ -169,6 +177,7 @@
 </form>
 
 <form method="post" action="/admin/notices" class="card wide-form" id="notices">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("notice_texts") }}</h2>
   <p class="hint">{{ t("notice_texts_intro") }}</p>
   <input type="hidden" name="language" value="{{ language }}">
@@ -202,6 +211,7 @@
   <input type="hidden" name="language" value="{{ language }}">
 </form>
 <form method="post" action="/admin/rates" class="card wide-form rates-form" id="rates">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("usd_rates") }}</h2>
   <p class="hint">{{ t("usd_rates_hint") }}</p>
   <div class="field compact-day">

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import period_select %}
+{% from "_macros.html" import csrf_field %}
 {% block title %}{{ t("accrual") }} · {{ t("app_name") }}{% endblock %}
 {% block content %}
 <section class="hero accrual-hero">
@@ -23,6 +24,7 @@
 <div class="notice warning">{{ t("accrual_google_missing") }}</div>
 {% endif %}
 {% if queued_count %}<div class="notice neutral">{{ t("accrual_queued_done", count=queued_count) }}</div>{% endif %}
+{% if flushed_count %}<div class="notice neutral">{{ t("accrual_flushed", count=flushed_count) }}</div>{% endif %}
 
 <section class="accrual-section">
   <div class="section-head section-head--stack">
@@ -34,6 +36,7 @@
 
   {% if items %}
   <form method="post" action="/admin/accrual/queue" class="accrual-send-form" data-accrual-form>
+    {{ csrf_field(csrf_token) }}
     <input type="hidden" name="period" value="{{ period }}">
     <div class="table-card accrual-table">
       <table>
@@ -83,6 +86,14 @@
   </section>
   {% endif %}
 </section>
+
+{% if sheet_ready %}
+<form method="post" action="/admin/accrual/flush" class="form-actions">
+  {{ csrf_field(csrf_token) }}
+  <input type="hidden" name="period" value="{{ period }}">
+  <button class="button secondary" type="submit">{{ t("flush_sheet_queue") }}</button>
+</form>
+{% endif %}
 
 <section class="accrual-section">
   <div class="section-head section-head--stack">

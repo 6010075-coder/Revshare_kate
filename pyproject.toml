@@ -13,6 +13,7 @@ dependencies = [
   "pypdf>=5.1.0",
   "python-multipart>=0.0.32",
   "pyyaml>=6.0.2",
+  "xlrd>=2.0.1",
   "uvicorn>=0.53.0",
 ]
 
@@ -22,6 +23,7 @@ dev = ["httpx>=0.28.1", "pytest>=8.3.0"]
 [project.scripts]
 revshare = "revshare.cli:main"
 revshare-web = "revshare.web:run"
+revshare-worker = "revshare.worker:run"
 
 [build-system]
 requires = ["setuptools>=75"]

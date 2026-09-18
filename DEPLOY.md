@@ -6,7 +6,7 @@
 
 - Проект: `integration-hub-revshare` (FastAPI + SQLite + Telegram + SMTP + Google Sheets)
 - Локальный запуск: `revshare-web` → `http://127.0.0.1:43127`
-- Git: сейчас на `origin.cursor.com` (временный репозиторий Cursor)
+- Git: `https://github.com/altegio/RevshareBD.git`, ветка `main`
 - Данные: `data/revshare.db`, `data/uploads/`, `data/secrets.env` (не в git)
 - Health check: `GET /health`
 
@@ -22,12 +22,11 @@
 
 ## Фаза 1. GitHub
 
-- [ ] Создать репозиторий в org Altegio (или личный, если org пока нет доступа)
-- [ ] Перенести код с `origin.cursor.com` на GitHub:
+- [x] Создать private-репозиторий в org Altegio
+- [x] Перенести код на GitHub:
 
 ```bash
-git remote rename origin cursor-origin
-git remote add origin git@github.com:ORG/integration-hub-revshare.git
+git remote set-url origin https://github.com/altegio/RevshareBD.git
 git push -u origin main
 ```
 
@@ -39,7 +38,7 @@ git push -u origin main
 
 ## Фаза 2. CI (GitHub Actions)
 
-- [ ] Workflow `test.yml`: на каждый PR и push в main
+- [x] Workflow `test.yml`: на каждый PR и push в main
 
 ```yaml
 # .github/workflows/test.yml
@@ -75,6 +74,8 @@ jobs:
 | Секреты | `data/secrets.env` на сервере, не в git |
 | Cron | Плановые уведомления (бот шлёт каждый час сам, но проверить) |
 
+Веб-процесс не должен запускать фоновые задачи. Запускайте отдельный `revshare-worker`, чтобы Telegram polling и планировщик существовали в единственном экземпляре.
+
 ### Переменные окружения (prod)
 
 Обязательные:
@@ -108,7 +109,26 @@ User=revshare
 WorkingDirectory=/opt/revshare-reports
 EnvironmentFile=/opt/revshare-reports/data/secrets.env
 Environment=REVSHARE_PUBLIC_URL=https://revshare.example.altegio.com
+Environment=REVSHARE_WEB_BACKGROUND_TASKS=0
 ExecStart=/opt/revshare-reports/.venv/bin/revshare-web
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Отдельный unit для фоновых задач:
+
+```ini
+[Unit]
+Description=Integration Hub RevShare worker
+After=network.target
+
+[Service]
+User=revshare
+WorkingDirectory=/opt/revshare-reports
+EnvironmentFile=/opt/revshare-reports/data/secrets.env
+ExecStart=/opt/revshare-reports/.venv/bin/revshare-worker
 Restart=always
 
 [Install]
@@ -126,6 +146,8 @@ server {
         proxy_pass http://127.0.0.1:43127;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
@@ -139,10 +161,10 @@ cd /opt/revshare-reports
 git fetch origin main
 git checkout main
 git pull origin main
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
+uv sync --locked --extra dev
+uv run pytest
 systemctl restart revshare
+systemctl restart revshare-worker
 curl -sf http://127.0.0.1:43127/health
 ```
 
@@ -172,6 +194,12 @@ curl -sf http://127.0.0.1:43127/health
 - [ ] Google Sheets: `python -m revshare sheet-probe --month YYYY-MM`
 - [ ] `pytest` зелёный в CI
 - [ ] PR → merge → автодеплой без ручного вмешательства
+
+Перед включением production проверьте права на секреты (`chmod 600 data/secrets.env`) и настройте регулярный backup:
+
+```bash
+python scripts/backup_data.py --destination /var/backups/revshare
+```
 
 ---
 

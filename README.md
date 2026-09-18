@@ -60,6 +60,14 @@ pytest
 revshare-web
 ```
 
+В production фоновые задачи запускаются отдельным процессом:
+
+```bash
+revshare-worker
+```
+
+Для веб-процесса в production задайте `REVSHARE_WEB_BACKGROUND_TASKS=0`, чтобы Telegram polling и планировщик не запускались в нескольких web workers.
+
 Откройте `http://127.0.0.1:43127`.
 
 Для проверки создан демонстрационный партнёр. Его форма:

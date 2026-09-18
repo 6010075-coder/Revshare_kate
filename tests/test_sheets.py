@@ -35,6 +35,11 @@ def test_locate_cell_returns_turnover_row_and_month_column():
     assert col == 1
 
 
+def test_find_turnover_row_uses_fallback_when_partner_cell_is_empty():
+    rows = [["", "Aug 2026"], ["", ""], ["Reported turnover", ""]]
+    assert sheets.find_turnover_row(rows, 1, 0) == 2
+
+
 def test_write_turnover_skips_formula_cells(monkeypatch):
     monkeypatch.setenv("REVSHARE_GOOGLE_SHEET_ID", "sheet-id")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", '{"client_email":"x@y.z"}')

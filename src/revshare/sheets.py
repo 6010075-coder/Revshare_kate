@@ -150,10 +150,9 @@ def find_turnover_row(
     rows: list[list[str]], partner_row: int, partner_col: int
 ) -> int:
     first_cell = str(rows[partner_row][partner_col] if partner_col < len(rows[partner_row]) else "")
-    if first_cell.casefold().strip() == first_cell.casefold().strip():
-        label = _normalize_header(first_cell)
-        if label and not any(token in label for token in TURNOVER_LABELS):
-            return partner_row
+    label = _normalize_header(first_cell)
+    if label and not any(token in label for token in TURNOVER_LABELS):
+        return partner_row
     for offset in range(0, 6):
         row_index = partner_row + offset
         if row_index >= len(rows):

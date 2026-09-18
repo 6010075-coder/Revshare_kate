@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import csrf_field %}
 {% block title %}{{ report.partner_name }} · {{ report.period }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -18,6 +19,7 @@
     <a class="button secondary" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_open_queue") }}</a>
     {% else %}
     <form method="post" action="/reports/{{ report.id }}/approve">
+      {{ csrf_field(csrf_token) }}
       <button class="button" type="submit">{{ t("approve_report") }}</button>
     </form>
     {% endif %}

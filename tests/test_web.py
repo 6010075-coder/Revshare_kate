@@ -1,6 +1,8 @@
 import base64
 import json
+import re
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -1276,6 +1278,45 @@ def test_admin_auth_protects_internal_routes_but_not_partner_form(
     credentials = base64.b64encode(b"kate:secret").decode()
     allowed = client.get("/", headers={"Authorization": f"Basic {credentials}"})
     assert allowed.status_code == 200
+
+
+def test_admin_auth_fails_closed_without_password(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("REVSHARE_ADMIN_PASSWORD", raising=False)
+    client = TestClient(create_app(tmp_path / "test.db", admin_auth=True))
+
+    assert client.get("/").status_code == 503
+    assert client.get("/submit/demo-partner").status_code == 200
+
+
+def test_admin_posts_require_csrf_token(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("REVSHARE_ADMIN_USER", "kate")
+    monkeypatch.setenv("REVSHARE_ADMIN_PASSWORD", "secret")
+    app = create_app(tmp_path / "test.db", admin_auth=True)
+    client = TestClient(app)
+    credentials = base64.b64encode(b"kate:secret").decode()
+    headers = {"Authorization": f"Basic {credentials}"}
+
+    page = client.get("/admin/settings", headers=headers)
+    assert page.status_code == 200
+    token = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+
+    denied = client.post("/admin/settings/telegram", headers=headers, data={})
+    assert denied.status_code == 403
+    allowed = client.post(
+        "/admin/settings/telegram",
+        headers=headers,
+        data={"csrf_token": token, "digest_chat": ""},
+        follow_redirects=False,
+    )
+    assert allowed.status_code == 303
+
+
+def test_accrual_page_does_not_write_to_sheets_on_get(tmp_path: Path):
+    client = TestClient(create_app(tmp_path / "test.db"))
+    with patch("revshare.web.flush_queued_sheet_writes") as flush:
+        response = client.get("/admin/accrual")
+    assert response.status_code == 200
+    flush.assert_not_called()
 
 
 def test_cross_origin_posts_are_rejected(tmp_path: Path):

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import period_select %}
+{% from "_macros.html" import csrf_field %}
 {% block title %}{{ t("altegio_data") }}{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
@@ -12,6 +13,7 @@
 </section>
 
 <form method="post" class="card wide-form">
+  {{ csrf_field(csrf_token) }}
   <div class="field-grid">
     <div class="field grow">
       <label for="partner_id">{{ t("partner") }}</label>

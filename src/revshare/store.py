@@ -6,7 +6,7 @@ import sqlite3
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -49,6 +49,8 @@ CLAIM_REASON_KEYS = {
     "file_error",
     "other",
 }
+
+NOTICE_CLAIM_TIMEOUT = timedelta(minutes=15)
 
 
 def discrepancy_items(
@@ -2074,14 +2076,16 @@ class Store:
             expected = (
                 round(report["turnover"] * rate, 2) if rate is not None else None
             )
-            db.execute(
+            updated = db.execute(
                 """
                 UPDATE reports
                 SET workflow_status = 'posted', posted_at = ?
-                WHERE id = ?
+                WHERE id = ? AND workflow_status = 'approved'
                 """,
                 (now, report_id),
             )
+            if updated.rowcount != 1:
+                return False
             db.execute(
                 """
                 INSERT INTO sheet_writes
@@ -2156,6 +2160,18 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def requeue_failed_sheet_writes(self, period: str) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE sheet_writes
+                SET status = 'queued', detail = 'Retry requested'
+                WHERE period = ? AND status = 'failed'
+                """,
+                (period,),
+            )
+        return cursor.rowcount
+
     def update_sheet_write(
         self,
         write_id: int,
@@ -2227,6 +2243,47 @@ class Store:
             ).fetchone()
         return row is not None
 
+    def claim_notice(
+        self, partner_id: int, period: str, notice_key: str, *, force: bool = False
+    ) -> bool:
+        """Atomically reserve a notice so parallel workers cannot send it twice."""
+        if force:
+            return True
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT id, status, sent_at FROM notice_sends
+                WHERE partner_id = ? AND period = ? AND notice_key = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (partner_id, period, notice_key),
+            ).fetchone()
+            if row and row["status"] == "sent":
+                return False
+            if row and row["status"] == "sending":
+                try:
+                    claimed_at = datetime.fromisoformat(row["sent_at"])
+                except (TypeError, ValueError):
+                    claimed_at = datetime.now(UTC)
+                if datetime.now(UTC) - claimed_at < NOTICE_CLAIM_TIMEOUT:
+                    return False
+            if row:
+                db.execute(
+                    "UPDATE notice_sends SET status = 'sending', detail = '', sent_at = ? WHERE id = ?",
+                    (now, row["id"]),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT INTO notice_sends
+                    (partner_id, period, notice_key, status, detail, sent_at)
+                    VALUES (?, ?, ?, 'sending', '', ?)
+                    """,
+                    (partner_id, period, notice_key, now),
+                )
+        return True
+
     def log_notice_send(
         self,
         partner_id: int,
@@ -2236,6 +2293,24 @@ class Store:
         detail: str,
     ) -> None:
         with self.connect() as db:
+            latest = db.execute(
+                """
+                SELECT id FROM notice_sends
+                WHERE partner_id = ? AND period = ? AND notice_key = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (partner_id, period, notice_key),
+            ).fetchone()
+            if latest:
+                db.execute(
+                    """
+                    UPDATE notice_sends
+                    SET status = ?, detail = ?, sent_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, detail, datetime.now(UTC).isoformat(), latest["id"]),
+                )
+                return
             db.execute(
                 """
                 INSERT INTO notice_sends

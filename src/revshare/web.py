@@ -7,12 +7,13 @@ import csv
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -75,6 +76,9 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = Jinja2Templates(directory=ROOT / "templates")
 UPLOADS = ROOT / "data" / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
+MAX_REPORT_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_SNAPSHOT_UPLOAD_BYTES = 5 * 1024 * 1024
+log = logging.getLogger("revshare.web")
 
 
 PARTNER_TABS = ("main", "settings", "history")
@@ -284,7 +288,7 @@ async def _fx_autoload_loop(store: Store) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass
+            log.exception("FX rate autoload failed")
         await asyncio.sleep(3600)
 
 
@@ -294,7 +298,7 @@ async def _notice_scheduler_loop(store: Store) -> None:
         try:
             await asyncio.to_thread(send_due_notices, store)
         except Exception:
-            pass
+            log.exception("Notice scheduler run failed")
         await asyncio.sleep(3600)
 
 
@@ -303,13 +307,17 @@ async def lifespan(app: FastAPI):
     load_secrets()
     tasks: list[asyncio.Task] = []
     testing = bool(os.getenv("PYTEST_CURRENT_TEST"))
-    if telegram_token() and not testing:
+    if app.state.web_background_tasks and telegram_token() and not testing:
         from revshare.bot import poll_forever
 
         tasks.append(asyncio.create_task(poll_forever(app.state.store)))
-    if app.state.store.fx_loader and not testing:
+    if app.state.web_background_tasks and app.state.store.fx_loader and not testing:
         tasks.append(asyncio.create_task(_fx_autoload_loop(app.state.store)))
-    if not testing and app.state.store.setting("notice_scheduler_enabled", "1") == "1":
+    if (
+        app.state.web_background_tasks
+        and not testing
+        and app.state.store.setting("notice_scheduler_enabled", "1") == "1"
+    ):
         tasks.append(asyncio.create_task(_notice_scheduler_loop(app.state.store)))
     yield
     for task in tasks:
@@ -337,6 +345,11 @@ def create_app(
     admin_user = os.getenv("REVSHARE_ADMIN_USER", "kate").strip()
     admin_password = os.getenv("REVSHARE_ADMIN_PASSWORD", "").strip()
     require_admin_auth = db_path is None if admin_auth is None else admin_auth
+    csrf_enabled = require_admin_auth
+    app.state.web_background_tasks = (
+        os.getenv("REVSHARE_WEB_BACKGROUND_TASKS", "0").strip() == "1"
+    )
+    app.state.csrf_token = secrets.token_urlsafe(32)
 
     @app.middleware("http")
     async def protect_admin(request: Request, call_next):
@@ -347,6 +360,12 @@ def create_app(
             or path.startswith("/reports/")
             or path.startswith("/export/")
         )
+        if require_admin_auth and admin_path and not admin_password:
+            log.error("Admin routes are disabled because REVSHARE_ADMIN_PASSWORD is missing")
+            return PlainTextResponse(
+                "Admin authentication is not configured",
+                status_code=503,
+            )
         if require_admin_auth and admin_password and admin_path:
             authorization = request.headers.get("authorization", "")
             valid = False
@@ -367,13 +386,28 @@ def create_app(
                     status_code=401,
                     headers={"WWW-Authenticate": 'Basic realm="Integration Hub Revshare"'},
                 )
+        if csrf_enabled and admin_path and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            form = await request.form()
+            supplied_token = str(form.get("csrf_token") or "")
+            if not hmac.compare_digest(supplied_token, app.state.csrf_token):
+                return PlainTextResponse("Invalid CSRF token", status_code=403)
         if (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
             and request.headers.get("origin")
             and request.headers["origin"] != f"{request.url.scheme}://{request.url.netloc}"
         ):
             return PlainTextResponse("Invalid request origin", status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+            "script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;",
+        )
+        return response
 
     def current_language(request: Request) -> str:
         language = request.cookies.get("revshare_language", "en")
@@ -403,6 +437,7 @@ def create_app(
             "language_labels": LANGUAGE_LABELS,
             "language_next": language_next,
             "t": translator(language),
+            "csrf_token": app.state.csrf_token,
             "months_word": lambda count: months_word(language, int(count)),
             "countries": countries_for(language),
             "format_local": format_local_datetime,
@@ -433,7 +468,7 @@ def create_app(
         sort: str = DEFAULT_SORT,
         dir: str = "asc",
     ):
-        selected = period or current_period()
+        selected = valid_period(period) or current_period()
         items = app.state.store.dashboard(selected)
         counts = {
             "total": len(items),
@@ -553,7 +588,7 @@ def create_app(
         partner = app.state.store.partner_by_token(token)
         if not partner:
             raise HTTPException(404, "Ссылка партнёра не найдена")
-        selected = period or current_period()
+        selected = valid_period(period) or current_period()
         deadline = deadline_date(app.state.store.global_schedule(), selected)
         return TEMPLATES.TemplateResponse(
             request,
@@ -570,6 +605,7 @@ def create_app(
 
     @app.post("/submit/{token}/parse")
     async def parse_report(
+        request: Request,
         token: str,
         period: str = Form(...),
         attachment: UploadFile = File(...),
@@ -579,25 +615,35 @@ def create_app(
             raise HTTPException(404, "Ссылка партнёра не найдена")
         if not attachment.filename:
             raise HTTPException(400, "Report file is required")
+        selected_period = valid_period(period)
+        if not selected_period:
+            raise HTTPException(422, "Invalid reporting period")
         suffix = Path(attachment.filename).suffix.lower()
-        if suffix not in {".xlsx", ".xls", ".csv", ".pdf"}:
+        if suffix not in {".xlsx", ".xlsm", ".xls", ".csv", ".pdf"}:
             raise HTTPException(400, "Поддерживаются Excel, CSV и PDF")
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_REPORT_UPLOAD_BYTES + 1024 * 1024:
+            raise HTTPException(413, "Файл больше 10 МБ")
         safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", Path(attachment.filename).name)
-        attachment_name = f"{partner['id']}_{period}_{secrets.token_hex(4)}_{safe_name}"
-        content = await attachment.read()
-        if len(content) > 10 * 1024 * 1024:
+        attachment_name = f"{partner['id']}_{selected_period}_{secrets.token_hex(4)}_{safe_name}"
+        content = await attachment.read(MAX_REPORT_UPLOAD_BYTES + 1)
+        if len(content) > MAX_REPORT_UPLOAD_BYTES:
             raise HTTPException(400, "Файл больше 10 МБ")
         path = UPLOADS / attachment_name
         path.write_bytes(content)
-        parsed = parse_partner_report(
-            path,
-            rate=partner["rate"],
-            default_currency=partner["currency"],
-            period=period,
-        )
+        try:
+            parsed = parse_partner_report(
+                path,
+                rate=partner["rate"],
+                default_currency=partner["currency"],
+                period=selected_period,
+            )
+        except Exception as error:
+            path.unlink(missing_ok=True)
+            raise HTTPException(400, "Не удалось прочитать файл отчёта") from error
         draft_token = app.state.store.create_report_draft(
             partner_id=partner["id"],
-            period=period,
+            period=selected_period,
             attachment=attachment_name,
             turnover=parsed.turnover,
             currency=parsed.currency,
@@ -886,7 +932,7 @@ def create_app(
     def usage_form(request: Request, partner_id: int | None = None, period: str | None = None):
         partners = [dict(row) for row in app.state.store.partners()]
         selected_id = partner_id or (partners[0]["id"] if partners else None)
-        selected_period = period or current_period()
+        selected_period = valid_period(period) or current_period()
         connected: set[str] = set()
         active: set[str] = set()
         payment: set[str] = set()
@@ -936,18 +982,21 @@ def create_app(
         active_ids: str = Form(""),
         payment_ids: str = Form(""),
     ):
+        selected_period = valid_period(period)
+        if not selected_period:
+            raise HTTPException(422, "Invalid reporting period")
         app.state.store.replace_usage(
             partner_id,
-            period,
+            selected_period,
             normalize_ids(connected_ids),
             normalize_ids(active_ids),
             normalize_ids(payment_ids),
         )
-        report_id = app.state.store.report_id_for(partner_id, period)
+        report_id = app.state.store.report_id_for(partner_id, selected_period)
         destination = (
             f"/reports/{report_id}"
             if report_id
-            else f"/admin/usage?partner_id={partner_id}&period={period}"
+            else f"/admin/usage?partner_id={partner_id}&period={selected_period}"
         )
         return RedirectResponse(destination, status_code=303)
 
@@ -957,7 +1006,10 @@ def create_app(
         selected = valid_period(period) or current_period()
         try:
             if attachment and attachment.filename:
-                payload = json.loads(attachment.file.read().decode("utf-8"))
+                raw = attachment.file.read(MAX_SNAPSHOT_UPLOAD_BYTES + 1)
+                if len(raw) > MAX_SNAPSHOT_UPLOAD_BYTES:
+                    raise ValueError("snapshot_too_large")
+                payload = json.loads(raw.decode("utf-8"))
                 result = apply_snapshot(
                     app.state.store, payload, source="json", default_period=selected
                 )
@@ -978,6 +1030,7 @@ def create_app(
                         default_period=selected,
                     )
         except Exception:
+            log.exception("Altegio snapshot import failed")
             return RedirectResponse(
                 f"/admin/settings?period={selected}&import=error#altegio",
                 status_code=303,
@@ -1003,6 +1056,7 @@ def create_app(
                 status_code=303,
             )
         except Exception:
+            log.exception("Altegio MySQL sync failed")
             return RedirectResponse(
                 f"/admin/settings?period={selected}&sync=error#altegio",
                 status_code=303,
@@ -1027,8 +1081,7 @@ def create_app(
         selected = valid_period(period) or current_period()
         queued_count = int(queued) if queued.isdigit() else 0
         sheet_ready = sheets.credentials_ready()
-        if sheet_ready:
-            flush_queued_sheet_writes(app.state.store)
+        flushed_count = int(request.query_params.get("flushed") or 0)
         return TEMPLATES.TemplateResponse(
             request,
             "accrual.html",
@@ -1039,6 +1092,7 @@ def create_app(
                 writes=app.state.store.sheet_writes(selected),
                 sheet_ready=sheet_ready,
                 queued_count=queued_count,
+                flushed_count=flushed_count,
             ),
         )
 
@@ -1065,6 +1119,16 @@ def create_app(
         query = urlencode({"period": selected, "queued": count})
         return RedirectResponse(f"/admin/accrual?{query}", status_code=303)
 
+    @app.post("/admin/accrual/flush")
+    def flush_accrual_queue(period: str = Form("")):
+        selected = valid_period(period) or current_period()
+        app.state.store.requeue_failed_sheet_writes(selected)
+        results = flush_queued_sheet_writes(app.state.store)
+        return RedirectResponse(
+            f"/admin/accrual?period={selected}&flushed={len(results)}",
+            status_code=303,
+        )
+
     @app.get("/admin/partners", response_class=HTMLResponse)
     def partners_page(request: Request):
         partners = [dict(row) for row in app.state.store.partners()]
@@ -1089,6 +1153,14 @@ def create_app(
         rate: str = Form(""),
     ):
         token = secrets.token_urlsafe(18)
+        try:
+            rate_value = float(rate) / 100 if rate.strip() else None
+        except ValueError as error:
+            raise HTTPException(422, "Rate must be a number") from error
+        if rate_value is not None and not 0 <= rate_value <= 1:
+            raise HTTPException(422, "Rate must be between 0 and 100 percent")
+        if not name.strip():
+            raise HTTPException(422, "Partner name is required")
         app.state.store.add_partner(
             name=name.strip(),
             legal_name=legal_name.strip(),
@@ -1099,7 +1171,7 @@ def create_app(
             telegram="",
             report_channel="email",
             token=token,
-            rate=float(rate) / 100 if rate.strip() else None,
+            rate=rate_value,
             currency="USD",
         )
         return RedirectResponse("/admin/partners", status_code=303)
@@ -1185,6 +1257,8 @@ def create_app(
             raise HTTPException(422, "Email is required for the selected channel")
         if report_channel == "telegram" and not telegram.strip():
             raise HTTPException(422, "Telegram is required for the selected channel")
+        if currency.upper() not in SUPPORTED_CURRENCIES:
+            raise HTTPException(422, "Unsupported currency")
         try:
             links = normalize_application_links(
                 application_url, application_comment, application_category
@@ -1204,6 +1278,12 @@ def create_app(
                 schedule_override=own_schedule in {"on", "true", "1"},
                 global_schedule=app.state.store.global_schedule(),
             )
+        try:
+            rate_value = float(rate) / 100 if rate.strip() else None
+        except ValueError as error:
+            raise HTTPException(422, "Rate must be a number") from error
+        if rate_value is not None and not 0 <= rate_value <= 1:
+            raise HTTPException(422, "Rate must be between 0 and 100 percent")
         app.state.store.update_partner(
             partner_id=partner_id,
             name=name.strip(),
@@ -1214,7 +1294,7 @@ def create_app(
             email=email.strip(),
             telegram=telegram.strip(),
             report_channel=report_channel,
-            rate=float(rate) / 100 if rate.strip() else None,
+            rate=rate_value,
             currency=currency.upper(),
             notice_settings=notice_settings,
             category=links[0]["category"] if links else "",
@@ -1352,7 +1432,12 @@ def create_app(
         public_form_url: str = Form("", alias="public_base_url"),
         notice_scheduler_enabled: str = Form(""),
     ):
-        app.state.store.set_setting("public_base_url", public_form_url.strip().rstrip("/"))
+        public_form_url = public_form_url.strip().rstrip("/")
+        if public_form_url:
+            parsed_url = urlparse(public_form_url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                raise HTTPException(422, "Public URL must be an http(s) URL")
+        app.state.store.set_setting("public_base_url", public_form_url)
         app.state.store.set_setting(
             "notice_scheduler_enabled",
             "1" if notice_scheduler_enabled in {"on", "true", "1"} else "0",
@@ -1364,7 +1449,13 @@ def create_app(
         idle_months_threshold: str = Form("3"),
         period: str = Form(""),
     ):
-        app.state.store.set_idle_months_threshold(idle_months_threshold)
+        try:
+            threshold = int(idle_months_threshold)
+        except ValueError as error:
+            raise HTTPException(422, "Idle months threshold must be a number") from error
+        if not 1 <= threshold <= 120:
+            raise HTTPException(422, "Idle months threshold must be between 1 and 120")
+        app.state.store.set_idle_months_threshold(str(threshold))
         selected = valid_period(period) or current_period()
         return RedirectResponse(
             f"/admin/settings?period={selected}&saved=1#altegio", status_code=303

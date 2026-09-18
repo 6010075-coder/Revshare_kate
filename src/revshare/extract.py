@@ -457,6 +457,17 @@ def extract_xlsx(path: Path) -> ExtractedReport:
     )
 
 
+def extract_xls(path: Path) -> ExtractedReport:
+    rows = _rows_from_file(path)
+    text = "\n".join(" ".join(row) for row in rows)
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=path.stem,
+        candidates=amounts_from_text(text),
+        notes=["legacy_xls"],
+    )
+
+
 def extract_pdf(path: Path) -> ExtractedReport:
     reader = PdfReader(str(path))
     text = "\n".join((page.extract_text() or "") for page in reader.pages)
@@ -478,7 +489,7 @@ EXTRACTORS = {
     ".csv": extract_csv,
     ".xlsx": extract_xlsx,
     ".xlsm": extract_xlsx,
-    ".xls": extract_xlsx,
+    ".xls": extract_xls,
     ".pdf": extract_pdf,
 }
 
@@ -594,7 +605,16 @@ def _sheet_rows(sheet) -> list[list[str]]:
 
 def _rows_from_file(path: Path, period: str | None = None) -> list[list[str]]:
     suffix = path.suffix.lower()
-    if suffix in {".xlsx", ".xlsm", ".xls"}:
+    if suffix == ".xls":
+        import xlrd
+
+        workbook = xlrd.open_workbook(path, on_demand=True)
+        return [
+            ["" if cell.value is None else str(cell.value) for cell in row]
+            for sheet in workbook.sheets()
+            for row in sheet.get_rows()
+        ]
+    if suffix in {".xlsx", ".xlsm"}:
         workbook = load_workbook(path, data_only=True, read_only=True)
         wanted = period_sheet_titles(period)
         if wanted:

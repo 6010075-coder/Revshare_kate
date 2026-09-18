@@ -5,3 +5,7 @@
   {% endfor %}
 </select>
 {% endmacro %}
+
+{% macro csrf_field(token) %}
+<input type="hidden" name="csrf_token" value="{{ token }}">
+{% endmacro %}

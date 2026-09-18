@@ -253,3 +253,34 @@ def test_due_notices_use_the_partner_schedule(tmp_path):
     )
     assert any(item["status"] == "sent" and item["key"] == "invite" for item in results)
     assert sent
+
+
+def test_partner_notice_is_claimed_once_without_force(tmp_path):
+    store = Store(tmp_path / "test.db")
+    partner_id = store.add_partner(
+        name="Once App",
+        legal_name="",
+        legal_country="",
+        altegio_legal_entity="",
+        contact_name="",
+        email="",
+        telegram="@partner",
+        report_channel="telegram",
+        token="once-token",
+        rate=0.2,
+        currency="USD",
+    )
+    store.bind_telegram_chat("once-token", "778")
+    sent = []
+    sender = lambda chat, text: sent.append((chat, text))
+
+    first = send_partner_notice(
+        store, store.partner(partner_id), "2026-08", "invite", sender=sender
+    )
+    second = send_partner_notice(
+        store, store.partner(partner_id), "2026-08", "invite", sender=sender
+    )
+
+    assert first["status"] == "sent"
+    assert second == {"status": "skipped", "detail": "already_sent"}
+    assert len(sent) == 1

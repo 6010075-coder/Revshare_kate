@@ -184,20 +184,32 @@ def send_partner_notice(
     event = events.get(notice_key)
     if event is None:
         return {"status": "skipped", "detail": "notice_disabled"}
-    if not force and store.notice_already_sent(partner["id"], period, notice_key):
-        return {"status": "skipped", "detail": "already_sent"}
     if should_skip_because_submitted(store, partner["id"], period, notice_key):
         return {"status": "skipped", "detail": "already_submitted"}
-    text = event["message"].strip()
-    link = form_link(partner["token"], period, store)
-    if link not in text:
-        text = f"{text}\n{link}"
     channel = partner.get("report_channel")
-
     if channel == "email":
         address = (partner.get("email") or "").strip()
         if not address:
             return {"status": "blocked", "detail": "email_missing"}
+        if not mail_sender and not mail_ready():
+            return {"status": "blocked", "detail": "smtp_not_configured"}
+    elif channel == "telegram":
+        chat_id = partner.get("telegram_chat_id") or ""
+        if not chat_id:
+            return {"status": "blocked", "detail": "partner_must_start_bot"}
+        if not sender and not (bot_token or telegram_token()):
+            return {"status": "blocked", "detail": "bot_token_missing"}
+    else:
+        return {"status": "skipped", "detail": "channel_not_supported"}
+    if not store.claim_notice(
+        partner["id"], period, notice_key, force=force
+    ):
+        return {"status": "skipped", "detail": "already_sent"}
+    text = event["message"].strip()
+    link = form_link(partner["token"], period, store)
+    if link not in text:
+        text = f"{text}\n{link}"
+    if channel == "email":
         letter = partner_letter(
             partner, period, notice_key, message=event["message"], store=store
         )
@@ -205,8 +217,6 @@ def send_partner_notice(
             if mail_sender:
                 mail_sender(address, letter["subject"], letter["text"], letter["html"])
             else:
-                if not mail_ready():
-                    return {"status": "blocked", "detail": "smtp_not_configured"}
                 send_email(
                     address, letter["subject"], letter["text"], letter["html"]
                 )
@@ -218,18 +228,12 @@ def send_partner_notice(
         store.log_notice_send(partner["id"], period, notice_key, "sent", "email")
         return {"status": "sent", "detail": notice_key}
 
-    if channel != "telegram":
-        return {"status": "skipped", "detail": "channel_not_supported"}
     chat_id = partner.get("telegram_chat_id") or ""
-    if not chat_id:
-        return {"status": "blocked", "detail": "partner_must_start_bot"}
     try:
         if sender:
             sender(str(chat_id), text)
         else:
             token = bot_token or telegram_token()
-            if not token:
-                return {"status": "blocked", "detail": "bot_token_missing"}
             send_message(token, chat_id, text)
     except TelegramError as error:
         store.log_notice_send(
@@ -253,7 +257,6 @@ def send_due_notices(
     today = today or local_today()
     period = period or reporting_period()
     results = []
-    digest_handled = store.notice_already_sent(0, period, "digest")
     for partner in store.partners():
         for event in due_events(partner, today, period, store):
             if event["audience"] == "partner":
@@ -268,9 +271,8 @@ def send_due_notices(
                 )
                 results.append({"partner": partner["name"], "key": event["key"], **result})
             elif event["key"] == "digest":
-                if digest_handled:
+                if not store.claim_notice(0, period, "digest"):
                     continue
-                digest_handled = True
                 kate_chat = store.digest_chat()
                 if not kate_chat:
                     results.append(
@@ -281,6 +283,7 @@ def send_due_notices(
                             "detail": "digest_chat_missing",
                         }
                     )
+                    store.log_notice_send(0, period, "digest", "blocked", "digest_chat_missing")
                     continue
                 text = digest_text(
                     store, period, store.setting("digest_language", "ru")
@@ -298,6 +301,7 @@ def send_due_notices(
                         {"partner": "Internal", "key": "digest", "status": "sent", "detail": ""}
                     )
                 except TelegramError:
+                    store.log_notice_send(0, period, "digest", "error", "telegram_rejected")
                     results.append(
                         {
                             "partner": "Internal",

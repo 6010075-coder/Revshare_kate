@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import csrf_field %}
 {% block title %}{{ partner.name }} · {{ t("partner_profile") }}{% endblock %}
 {% block content %}
 <section class="section-head partner-edit-head">
@@ -19,6 +20,7 @@
 </nav>
 
 <form method="post" class="card wide-form tab-panel {{ 'active' if active_tab == 'main' else '' }}" data-panel="main">
+{{ csrf_field(csrf_token) }}
   <div class="form-section">
     <h2>{{ t("partner") }}</h2>
     <div class="field-grid">
@@ -117,6 +119,7 @@
 </form>
 
 <form method="post" action="/admin/partners/{{ partner.id }}/notifications" class="card wide-form tab-panel {{ 'active' if active_tab == 'settings' else '' }}" data-panel="settings">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("notice_settings") }}</h2>
   <p class="hint">{{ t("notice_settings_hint") }}</p>
   <div class="field compact-day language-field">
@@ -172,6 +175,7 @@
 </form>
 
 <form method="post" action="/admin/partners/{{ partner.id }}/notify" class="card wide-form send-now tab-panel {{ 'active' if active_tab == 'settings' else '' }}" data-panel="settings">
+{{ csrf_field(csrf_token) }}
   <h2>{{ t("send_now") }}</h2>
   <p class="hint">{{ t("send_now_hint") }}</p>
   {% if notice_result == "sent" %}<p class="hint">{{ t("notice_sent") }}</p>{% endif %}
