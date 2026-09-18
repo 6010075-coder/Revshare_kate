@@ -1259,10 +1259,6 @@ def create_app(
             raise HTTPException(422, "Invalid Altegio legal entity")
         if report_channel not in REPORT_CHANNELS:
             raise HTTPException(422, "Invalid report channel")
-        if report_channel == "email" and not email.strip():
-            raise HTTPException(422, "Email is required for the selected channel")
-        if report_channel == "telegram" and not telegram.strip():
-            raise HTTPException(422, "Telegram is required for the selected channel")
         if currency.upper() not in SUPPORTED_CURRENCIES:
             raise HTTPException(422, "Unsupported currency")
         try:

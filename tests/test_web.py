@@ -1508,6 +1508,33 @@ def test_partner_can_be_saved_without_altegio_legal_entity(tmp_path: Path):
     assert saved["altegio_legal_entity"] == ""
 
 
+def test_partner_can_be_saved_without_notification_contact(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+    client.post(
+        "/admin/partners",
+        data={"name": "Partner Without Contact", "legal_name": "Partner LLC", "rate": "15"},
+    )
+    partner = next(
+        row for row in app.state.store.partners() if row["name"] == "Partner Without Contact"
+    )
+
+    response = client.post(
+        f"/admin/partners/{partner['id']}/edit",
+        data={
+            "name": "Partner Without Contact Updated",
+            "legal_name": "Partner LLC",
+            "report_channel": "email",
+            "application_url": "https://app.alteg.io/e/mp_38_assist/",
+            "rate": "15",
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 200
+    assert app.state.store.partner(partner["id"])["name"] == "Partner Without Contact Updated"
+
+
 def test_partner_notice_exceptions_are_saved(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
