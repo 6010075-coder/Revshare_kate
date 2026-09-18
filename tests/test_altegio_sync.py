@@ -12,6 +12,8 @@ from revshare.store import Store
 def test_parse_application_id_from_hub_url():
     assert parse_application_id("https://app.alteg.io/app/564") == 564
     assert parse_application_id("https://app.alteg.io/app/7/") == 7
+    assert parse_application_id("https://app.alteg.io/e/mp_38_assist/") == 38
+    assert parse_application_id("https://app.alteg.io/e/mp_564_ai_beauty_bot/") == 564
     assert parse_application_id("https://example.com/other") is None
 
 

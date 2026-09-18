@@ -12,6 +12,7 @@ from revshare.mysql import mysql_connection, mysql_configured
 from revshare.store import Store
 
 APP_ID_RE = re.compile(r"/app/(\d+)/?$")
+MARKETPLACE_APP_ID_RE = re.compile(r"/e/mp_(\d+)(?:_[^/]+)?/?$")
 
 
 @dataclass
@@ -36,10 +37,11 @@ class SyncResult:
 
 def parse_application_id(url: str) -> int | None:
     path = urlparse(url.strip()).path
-    match = APP_ID_RE.search(path)
-    if not match:
-        return None
-    return int(match.group(1))
+    for pattern in (APP_ID_RE, MARKETPLACE_APP_ID_RE):
+        match = pattern.search(path)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def application_ids_for_partner(store: Store, partner_id: int) -> list[int]:
