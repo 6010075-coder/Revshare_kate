@@ -34,6 +34,10 @@
       {% set counts_match = snapshot_ready and reported_count == active_count %}
 
       <section class="review-source review-source-file">
+        <header class="review-source-head">
+          <h2>{{ t("review_from_your_report_title") }}</h2>
+          <p>{{ t("review_from_your_report_hint_short") }}</p>
+        </header>
         <div class="review-summary-metrics">
           <div class="review-summary-metric">
             <strong>{{ reported_count }}</strong>
@@ -74,6 +78,7 @@
       <section class="review-source review-source-check">
         <header class="review-source-head">
           <h2>{{ t("review_our_check_title") }}</h2>
+          <p>{{ t("review_our_check_hint") }}</p>
         </header>
         {% if not snapshot_ready %}
         <div class="notice neutral">{{ t("snapshot_missing") }}</div>
