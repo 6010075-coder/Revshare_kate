@@ -12,12 +12,12 @@
   </div>
 </section>
 
-<form method="post" class="card wide-form">
-  {{ csrf_field(csrf_token) }}
+<section class="card wide-form">
+<form method="get" action="/admin/usage" class="usage-filter-form">
   <div class="field-grid">
     <div class="field grow">
       <label for="partner_id">{{ t("partner") }}</label>
-      <select id="partner_id" name="partner_id">
+      <select id="partner_id" name="partner_id" data-auto-submit>
         {% for partner in partners %}
         <option value="{{ partner.id }}" {% if partner.id == partner_id %}selected{% endif %}>{{ partner.name }}</option>
         {% endfor %}
@@ -25,9 +25,15 @@
     </div>
     <div class="field">
       <label for="period">{{ t("month") }}</label>
-      {{ period_select("period", "period", period, period_options, t) }}
+      {{ period_select("period", "period", period, period_options, t, 'data-auto-submit') }}
     </div>
   </div>
+</form>
+
+<form method="post" class="usage-snapshot-form">
+  {{ csrf_field(csrf_token) }}
+  <input type="hidden" name="partner_id" value="{{ partner_id }}">
+  <input type="hidden" name="period" value="{{ period }}">
 
   {% if connected_count or active_count or payment_count %}
   <p class="filter-summary">
@@ -65,6 +71,7 @@
     <a class="button secondary" href="/?period={{ period }}">{{ t("back_dashboard") }}</a>
   </div>
 </form>
+</section>
 
 <section id="disconnect-candidates" class="disconnect-on-usage">
   <div class="section-head">

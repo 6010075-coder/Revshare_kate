@@ -1035,6 +1035,32 @@ def test_altegio_data_page_links_to_settings(tmp_path: Path):
     assert "installed 2, with activity 1, with a payment callback 1" in filled.text
     assert "cannot be verified" not in filled.text
 
+    other_id = store.add_partner(
+        name="Other Test Partner",
+        legal_name="",
+        legal_country="",
+        altegio_legal_entity="",
+        contact_name="",
+        email="other@example.com",
+        telegram="",
+        report_channel="email",
+        token="other-test-partner",
+        rate=0.2,
+        currency="USD",
+    )
+    store.replace_usage(
+        other_id,
+        "2026-08",
+        connected_ids=["901"],
+        active_ids=["902"],
+        payment_ids=["902"],
+    )
+    switched = client.get(f"/admin/usage?partner_id={other_id}&period=2026-08")
+    assert re.search(r'<textarea id="connected_ids"[^>]*>\s*901', switched.text)
+    assert re.search(r'<textarea id="active_ids"[^>]*>\s*902', switched.text)
+    assert 'name="partner_id" value="%s"' % other_id in switched.text
+    assert 'id="partner_id" name="partner_id" data-auto-submit' in switched.text
+
 
 def test_dashboard_sorts_by_any_column(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
