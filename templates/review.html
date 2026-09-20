@@ -27,6 +27,54 @@
     </nav>
 
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
+      {% if application_breakdown %}
+      <section class="review-source application-breakdown">
+        <header class="review-source-head">
+          <p class="eyebrow">{{ t("application_breakdown") }}</p>
+          <h2>{{ t("application_breakdown") }}</h2>
+          <p>{{ t("application_breakdown_hint") }}</p>
+        </header>
+        <div class="application-breakdown-list">
+          {% for item in application_breakdown %}
+          <article class="application-breakdown-card">
+            <div>
+              <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
+              {% if item.application_match == "matched" %}
+              <span class="tag">{{ t("application_matched") }}</span>
+              {% else %}
+              <span class="tag warning">{{ t("application_not_matched") }}</span>
+              {% endif %}
+            </div>
+            {% if item.application_url %}
+            <a class="text-link" href="{{ item.application_url }}" target="_blank" rel="noopener">{{ item.application_url }}</a>
+            {% endif %}
+            <div class="application-breakdown-meta">
+              <span>{{ t("turnover") }}: <strong>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</strong></span>
+              <span>{{ t("detected_clients") }}: <strong>{{ item.location_ids|length }}</strong></span>
+            </div>
+            {% if item.application_usage_ready %}
+            <div class="application-breakdown-check {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
+              {{ t("application_active_locations", active=item.application_active_count, reported=item.location_ids|length) }}
+              {% if item.application_missing_active %}<small>{{ t("application_usage_missing", ids=item.application_missing_active|join(", ")) }}</small>{% endif %}
+              {% if item.application_unknown_locations %}<small>{{ t("application_usage_unknown", ids=item.application_unknown_locations|join(", ")) }}</small>{% endif %}
+            </div>
+            {% else %}
+            <small class="hint">{{ t("application_usage_unavailable") }}</small>
+            {% endif %}
+            {% if item.location_ids %}
+            <details class="ids-details">
+              <summary>{{ t("client_ids_details") }}</summary>
+              <ul class="id-chip-list">
+                {% for location_id in item.location_ids %}<li>{{ location_id }}</li>{% endfor %}
+              </ul>
+            </details>
+            {% endif %}
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
       {% set reported_count = draft.location_ids|length %}
       {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
       {% set counts_match = snapshot_ready and reported_count == active_count %}

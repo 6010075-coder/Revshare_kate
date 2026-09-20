@@ -332,6 +332,21 @@ class Store:
                     api_events INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(partner_id, period, location_id)
                 );
+                CREATE TABLE IF NOT EXISTS usage_application_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id INTEGER NOT NULL,
+                    period TEXT NOT NULL,
+                    application_id INTEGER NOT NULL,
+                    location_id TEXT NOT NULL,
+                    is_connected INTEGER NOT NULL DEFAULT 1,
+                    is_active INTEGER NOT NULL DEFAULT 0,
+                    had_payment INTEGER NOT NULL DEFAULT 0,
+                    location_name TEXT NOT NULL DEFAULT '',
+                    connected_at TEXT NOT NULL DEFAULT '',
+                    last_api_at TEXT NOT NULL DEFAULT '',
+                    has_api_amounts INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(partner_id, period, application_id, location_id)
+                );
                 CREATE TABLE IF NOT EXISTS reports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     partner_id INTEGER NOT NULL,
@@ -349,6 +364,7 @@ class Store:
                     comment TEXT NOT NULL DEFAULT '',
                     attachment TEXT,
                     submitted_at TEXT NOT NULL,
+                    application_breakdown TEXT NOT NULL DEFAULT '[]',
                     UNIQUE(partner_id, period)
                 );
                 CREATE TABLE IF NOT EXISTS report_clients (
@@ -375,6 +391,7 @@ class Store:
                     reported_share REAL,
                     location_ids TEXT NOT NULL,
                     extraction_notes TEXT NOT NULL,
+                    application_breakdown TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS report_claims (
@@ -403,6 +420,7 @@ class Store:
                     comment TEXT NOT NULL DEFAULT '',
                     attachment TEXT,
                     submitted_at TEXT NOT NULL,
+                    application_breakdown TEXT NOT NULL DEFAULT '[]',
                     UNIQUE(report_id, version)
                 );
                 """
@@ -439,6 +457,22 @@ class Store:
             }
             if "contract_rate" not in version_columns:
                 db.execute("ALTER TABLE report_versions ADD COLUMN contract_rate REAL")
+            if "application_breakdown" not in report_columns:
+                db.execute(
+                    "ALTER TABLE reports ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
+                )
+            draft_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(report_drafts)").fetchall()
+            }
+            if "application_breakdown" not in draft_columns:
+                db.execute(
+                    "ALTER TABLE report_drafts ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "application_breakdown" not in version_columns:
+                db.execute(
+                    "ALTER TABLE report_versions ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
+                )
             application_columns = {
                 row["name"]
                 for row in db.execute("PRAGMA table_info(partner_applications)").fetchall()
@@ -1205,6 +1239,68 @@ class Store:
             ).fetchall()
         return {row["location_id"]: dict(row) for row in rows}
 
+    def application_usage(
+        self, partner_id: int, period: str, application_id: int
+    ) -> tuple[set[str], set[str]] | None:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT location_id, is_connected, is_active
+                FROM usage_application_snapshots
+                WHERE partner_id = ? AND period = ? AND application_id = ?
+                """,
+                (partner_id, period, application_id),
+            ).fetchall()
+        if not rows:
+            return None
+        connected = {row["location_id"] for row in rows if row["is_connected"]}
+        active = {row["location_id"] for row in rows if row["is_active"]}
+        return connected, active
+
+    def replace_application_usage(
+        self,
+        partner_id: int,
+        period: str,
+        application_id: int,
+        connected_ids: list[str],
+        active_ids: list[str],
+        payment_ids: list[str] | None = None,
+        location_details: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        payment_ids = payment_ids or []
+        all_ids = set(connected_ids) | set(active_ids) | set(payment_ids)
+        details = location_details or {}
+        with self.connect() as db:
+            db.execute(
+                """
+                DELETE FROM usage_application_snapshots
+                WHERE partner_id = ? AND period = ? AND application_id = ?
+                """,
+                (partner_id, period, application_id),
+            )
+            db.executemany(
+                """
+                INSERT INTO usage_application_snapshots
+                (partner_id, period, application_id, location_id, is_connected,
+                 is_active, had_payment, location_name, connected_at, last_api_at,
+                 has_api_amounts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        partner_id,
+                        period,
+                        application_id,
+                        location_id,
+                        int(location_id in connected_ids),
+                        int(location_id in active_ids),
+                        int(location_id in payment_ids),
+                        *normalize_location_detail(details.get(location_id)).values(),
+                    )
+                    for location_id in sorted(all_ids)
+                ],
+            )
+
     def replace_usage(
         self,
         partner_id: int,
@@ -1591,6 +1687,7 @@ class Store:
         reported_share: float | None,
         location_ids: list[str],
         extraction_notes: list[str],
+        application_breakdown: list[dict[str, object]] | None = None,
     ) -> str:
         token = secrets.token_urlsafe(24)
         with self.connect() as db:
@@ -1598,8 +1695,9 @@ class Store:
                 """
                 INSERT INTO report_drafts
                 (token, partner_id, period, attachment, turnover, currency,
-                reported_share, location_ids, extraction_notes, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reported_share, location_ids, extraction_notes, application_breakdown,
+                created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token,
@@ -1611,6 +1709,7 @@ class Store:
                     reported_share,
                     json.dumps(location_ids),
                     json.dumps(extraction_notes),
+                    json.dumps(application_breakdown or [], ensure_ascii=False),
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -1625,13 +1724,14 @@ class Store:
         reported_share: float | None,
         location_ids: list[str],
         extraction_notes: list[str],
+        application_breakdown: list[dict[str, object]] | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute(
                 """
                 UPDATE report_drafts
                 SET turnover = ?, currency = ?, reported_share = ?,
-                    location_ids = ?, extraction_notes = ?
+                    location_ids = ?, extraction_notes = ?, application_breakdown = ?
                 WHERE token = ? AND partner_id = ?
                 """,
                 (
@@ -1640,6 +1740,7 @@ class Store:
                     reported_share,
                     json.dumps(location_ids),
                     json.dumps(extraction_notes),
+                    json.dumps(application_breakdown or [], ensure_ascii=False),
                     token,
                     partner_id,
                 ),
@@ -1659,6 +1760,9 @@ class Store:
         result = dict(row)
         result["location_ids"] = json.loads(result["location_ids"])
         result["extraction_notes"] = json.loads(result["extraction_notes"])
+        result["application_breakdown"] = json.loads(
+            result.get("application_breakdown") or "[]"
+        )
         return result
 
     def delete_report_draft(self, token: str, partner_id: int) -> None:
@@ -1679,6 +1783,7 @@ class Store:
         comment: str,
         attachment: str | None,
         claims: list[dict[str, str]] | None = None,
+        application_breakdown: list[dict[str, object]] | None = None,
     ) -> tuple[int, Review]:
         connected, active = self.usage(partner_id, period)
         with self.connect() as db:
@@ -1720,7 +1825,8 @@ class Store:
                     contract_rate = ?, client_count = ?, status = ?, risk_level = ?, risk_score = ?,
                     reasons = ?, missing_active = ?, unknown_locations = ?,
                     comment = ?, attachment = ?, submitted_at = ?,
-                    workflow_status = ?, approved_at = NULL, approved_by = NULL
+                    workflow_status = ?, application_breakdown = ?,
+                    approved_at = NULL, approved_by = NULL
                     WHERE id = ?
                     """,
                     (
@@ -1739,6 +1845,7 @@ class Store:
                         attachment,
                         now,
                         workflow_status,
+                        json.dumps(application_breakdown or [], ensure_ascii=False),
                         report_id,
                     ),
                 )
@@ -1749,8 +1856,8 @@ class Store:
                     (partner_id, period, turnover, currency, reported_share, contract_rate,
                     client_count, status, risk_level, risk_score, reasons,
                     missing_active, unknown_locations, comment, attachment, submitted_at,
-                    workflow_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    workflow_status, application_breakdown)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         partner_id,
@@ -1770,6 +1877,7 @@ class Store:
                         attachment,
                         now,
                         workflow_status,
+                        json.dumps(application_breakdown or [], ensure_ascii=False),
                     ),
                 )
                 report_id = cursor.lastrowid
@@ -1821,8 +1929,8 @@ class Store:
                 INSERT INTO report_versions
                 (report_id, version, turnover, currency, reported_share, contract_rate,
                 client_count, status, risk_level, risk_score, reasons,
-                comment, attachment, submitted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                comment, attachment, submitted_at, application_breakdown)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -1839,6 +1947,7 @@ class Store:
                     comment,
                     attachment,
                     now,
+                    json.dumps(application_breakdown or [], ensure_ascii=False),
                 ),
             )
             self._log_report_event(
@@ -1963,6 +2072,9 @@ class Store:
         item["reasons"] = json.loads(item["reasons"])
         item["missing_active"] = json.loads(item["missing_active"])
         item["unknown_locations"] = json.loads(item["unknown_locations"])
+        item["application_breakdown"] = json.loads(
+            item.get("application_breakdown") or "[]"
+        )
         item["clients"] = [client["location_id"] for client in clients]
         all_claims = [dict(claim) for claim in claims]
         idle_claims = [
@@ -2000,7 +2112,7 @@ class Store:
                 """
                 SELECT version, turnover, currency, reported_share, contract_rate, client_count,
                        status, risk_level, risk_score, reasons, comment,
-                       attachment, submitted_at
+                       attachment, submitted_at, application_breakdown
                 FROM report_versions
                 WHERE report_id = ?
                 ORDER BY version DESC
@@ -2011,6 +2123,9 @@ class Store:
             {
                 **dict(version),
                 "reasons": json.loads(version["reasons"]),
+                "application_breakdown": json.loads(
+                    version["application_breakdown"] or "[]"
+                ),
             }
             for version in versions
         ]

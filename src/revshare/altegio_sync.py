@@ -191,8 +191,51 @@ def sync_period(store: Store, period: str) -> SyncResult:
                     {"partner": partner["name"], "reason": "no_application_url"}
                 )
                 continue
+            locations: dict[str, dict[str, object]] = {}
             try:
-                locations = _fetch_usage_rows(cursor, app_ids, checked)
+                for application_id in app_ids:
+                    application_locations = _fetch_usage_rows(
+                        cursor, [application_id], checked
+                    )
+                    connected_for_app = sorted(
+                        location_id
+                        for location_id, facts in application_locations.items()
+                        if facts.get("connected_at")
+                    )
+                    active_for_app = sorted(
+                        active_rows_ids(application_locations, active_only=True)
+                    )
+                    payment_for_app = sorted(
+                        location_id
+                        for location_id, facts in application_locations.items()
+                        if facts.get("has_api_amounts")
+                    )
+                    store.replace_application_usage(
+                        partner["id"],
+                        checked,
+                        application_id,
+                        connected_for_app,
+                        active_for_app,
+                        payment_for_app,
+                        location_details=application_locations,
+                    )
+                    for location_id, facts in application_locations.items():
+                        current = locations.setdefault(
+                            location_id,
+                            {
+                                "name": "",
+                                "connected_at": "",
+                                "last_api_at": "",
+                                "has_api_amounts": 0,
+                            },
+                        )
+                        for key in ("name", "connected_at", "last_api_at"):
+                            if facts.get(key) and not current.get(key):
+                                current[key] = facts[key]
+                        current["has_api_amounts"] = int(
+                            bool(current.get("has_api_amounts"))
+                            or bool(facts.get("has_api_amounts"))
+                        )
             except Exception as error:
                 result.errors.append(f"{partner['name']}: {error}")
                 continue

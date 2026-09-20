@@ -44,6 +44,41 @@
   </article>
   <article><strong class="risk {{ report.risk_level }}">{{ report.risk_score }}/100</strong><span>{{ t("risk") }}</span></article>
 </section>
+{% if report.application_breakdown %}
+<section class="card application-breakdown">
+  <h2>{{ t("application_breakdown") }}</h2>
+  <p class="hint">{{ t("application_breakdown_hint") }}</p>
+  <div class="application-breakdown-list">
+    {% for item in report.application_breakdown %}
+    <article class="application-breakdown-card">
+      <div>
+        <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
+        {% if item.application_match == "matched" %}
+        <span class="tag">{{ t("application_matched") }}</span>
+        {% else %}
+        <span class="tag warning">{{ t("application_not_matched") }}</span>
+        {% endif %}
+      </div>
+      {% if item.application_url %}<a class="text-link" href="{{ item.application_url }}" target="_blank" rel="noopener">{{ item.application_url }}</a>{% endif %}
+      <div class="application-breakdown-meta">
+        <span>{{ t("turnover") }}: <strong>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</strong></span>
+        <span>{{ t("detected_clients") }}: <strong>{{ item.location_ids|length }}</strong></span>
+      </div>
+      {% if item.application_usage_ready %}
+      <div class="application-breakdown-check {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
+        {{ t("application_active_locations", active=item.application_active_count, reported=item.location_ids|length) }}
+        {% if item.application_missing_active %}<small>{{ t("application_usage_missing", ids=item.application_missing_active|join(", ")) }}</small>{% endif %}
+        {% if item.application_unknown_locations %}<small>{{ t("application_usage_unknown", ids=item.application_unknown_locations|join(", ")) }}</small>{% endif %}
+      </div>
+      {% else %}
+      <small class="hint">{{ t("application_usage_unavailable") }}</small>
+      {% endif %}
+      {% if item.location_ids %}<small>{{ item.location_ids|join(", ") }}</small>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 <div class="two-columns review-columns">
   <section class="card">
     <h2>{{ t("reconciliation") }}</h2>

@@ -37,6 +37,7 @@ from revshare.altegio import (
     snapshot_url,
 )
 from revshare.altegio_sync import sync_period
+from revshare.application_breakdown import add_usage_checks, breakdown_for_report
 from revshare.mysql import mysql_configured
 from revshare.dispatch import partner_letter, send_due_notices, send_partner_notice
 from revshare.mailer import mail_ready
@@ -425,6 +426,22 @@ def create_app(
             return chosen
         return partner["notice_settings"]["language"]
 
+    def application_breakdown_with_usage(
+        partner_id: int, period: str, items: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        application_ids = {
+            item["application_id"]
+            for item in items
+            if isinstance(item.get("application_id"), int)
+        }
+        usage = {
+            application_id: app.state.store.application_usage(
+                partner_id, period, application_id
+            )
+            for application_id in application_ids
+        }
+        return add_usage_checks(items, usage)
+
     def context(request: Request, **values: object) -> dict:
         partner_page = "language_override" in values
         language = str(values.pop("language_override", "")) or current_language(request)
@@ -608,6 +625,29 @@ def create_app(
             ),
         )
 
+    @app.get("/submit/{token}/template.csv")
+    def report_template(token: str, period: str | None = None):
+        partner = app.state.store.partner_by_token(token)
+        if not partner:
+            raise HTTPException(404, "Ссылка партнёра не найдена")
+        selected = valid_period(period) or current_period()
+        stream = io.StringIO()
+        stream.write("\ufeff")
+        writer = csv.writer(stream)
+        writer.writerow(["Application", "Application URL", "Location ID", "Turnover", "Currency"])
+        links = app.state.store.application_links(partner["id"])
+        for link in links:
+            writer.writerow([link.get("comment", ""), link.get("url", ""), "", "", partner["currency"]])
+        if not links:
+            writer.writerow(["", "", "", "", partner["currency"]])
+        return StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="revshare-template-{selected}.csv"'
+            },
+        )
+
     @app.post("/submit/{token}/parse")
     async def parse_report(
         request: Request,
@@ -646,6 +686,9 @@ def create_app(
         except Exception as error:
             path.unlink(missing_ok=True)
             raise HTTPException(400, "Не удалось прочитать файл отчёта") from error
+        application_breakdown = breakdown_for_report(
+            parsed, app.state.store.application_links(partner["id"])
+        )
         draft_token = app.state.store.create_report_draft(
             partner_id=partner["id"],
             period=selected_period,
@@ -655,6 +698,7 @@ def create_app(
             reported_share=parsed.reported_share,
             location_ids=parsed.location_ids,
             extraction_notes=parsed.notes,
+            application_breakdown=application_breakdown,
         )
         return RedirectResponse(
             f"/submit/{token}/review/{draft_token}",
@@ -681,10 +725,14 @@ def create_app(
                 default_currency=partner["currency"],
                 period=draft["period"],
             )
+            application_breakdown = breakdown_for_report(
+                parsed, app.state.store.application_links(partner["id"])
+            )
             if (
                 parsed.location_ids != draft["location_ids"]
                 or parsed.turnover != draft["turnover"]
                 or parsed.reported_share != draft["reported_share"]
+                or application_breakdown != draft.get("application_breakdown", [])
             ):
                 app.state.store.update_report_draft(
                     token=draft_token,
@@ -694,11 +742,15 @@ def create_app(
                     reported_share=parsed.reported_share,
                     location_ids=parsed.location_ids,
                     extraction_notes=parsed.notes,
+                    application_breakdown=application_breakdown,
                 )
                 draft = app.state.store.report_draft(draft_token, partner["id"])
         connected, active = app.state.store.usage(partner["id"], draft["period"])
         check = assess(draft["location_ids"], connected, active)
         discrepancies = discrepancy_items(draft["location_ids"], connected, active)
+        application_breakdown = application_breakdown_with_usage(
+            partner["id"], draft["period"], draft.get("application_breakdown", [])
+        )
         long_idle = long_idle_locations(
             app.state.store, partner["id"], draft["period"], discrepancies
         )
@@ -719,6 +771,7 @@ def create_app(
                 optional_discrepancies=[
                     item for item in discrepancies if not item["required"]
                 ],
+                application_breakdown=application_breakdown,
                 long_idle=long_idle,
                 idle_months_threshold=app.state.store.idle_months_threshold(),
                 form_error=None,
@@ -893,6 +946,9 @@ def create_app(
                     optional_discrepancies=[
                         item for item in discrepancies if not item["required"]
                     ],
+                    application_breakdown=application_breakdown_with_usage(
+                        partner["id"], draft["period"], draft.get("application_breakdown", [])
+                    ),
                     long_idle=long_idle,
                     idle_months_threshold=app.state.store.idle_months_threshold(),
                     form_error="explanations_required",
@@ -916,6 +972,7 @@ def create_app(
             comment=comment,
             attachment=draft["attachment"],
             claims=claims,
+            application_breakdown=draft.get("application_breakdown", []),
         )
         app.state.store.delete_report_draft(draft_token, partner["id"])
         return TEMPLATES.TemplateResponse(
@@ -1546,6 +1603,9 @@ def create_app(
         report = app.state.store.report(report_id)
         if not report:
             raise HTTPException(404, "Отчёт не найден")
+        report["application_breakdown"] = application_breakdown_with_usage(
+            report["partner_id"], report["period"], report.get("application_breakdown", [])
+        )
         return TEMPLATES.TemplateResponse(
             request,
             "report.html",

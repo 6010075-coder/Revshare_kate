@@ -243,6 +243,62 @@ def test_full_submission_flow(tmp_path: Path):
     assert b"Demo Integration Hub App" in export.content
 
 
+def test_multi_application_submission_flow(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+    store: Store = app.state.store
+    partner = store.partner_by_token("demo-partner")
+    store.replace_application_links(
+        partner["id"],
+        [
+            {
+                "url": "https://app.alteg.io/e/mp_39_message_help/",
+                "comment": "Message.help",
+                "category": "",
+            },
+            {
+                "url": "https://app.alteg.io/e/mp_564_ai_beauty_bot/",
+                "comment": "AI Beauty Bot",
+                "category": "",
+            },
+        ],
+    )
+    store.replace_usage(
+        partner["id"], "2026-08", connected_ids=["101", "102"], active_ids=["101", "102"]
+    )
+    content = (
+        "Application,Location ID,Turnover,Currency\n"
+        "Message.help,101,100,USD\n"
+        "AI Beauty Bot,102,200,USD\n"
+    ).encode()
+
+    preview = client.post(
+        "/submit/demo-partner/parse",
+        data={"period": "2026-08"},
+        files={"attachment": ("multi.csv", content, "text/csv")},
+    )
+
+    assert preview.status_code == 200
+    assert "Message.help" in preview.text
+    assert "AI Beauty Bot" in preview.text
+    draft_token = str(preview.url).rstrip("/").split("/")[-1]
+    draft = store.report_draft(draft_token, partner["id"])
+    assert [item["application_match"] for item in draft["application_breakdown"]] == [
+        "matched",
+        "matched",
+    ]
+
+    response = client.post(f"/submit/demo-partner/confirm/{draft_token}", data={})
+
+    assert response.status_code == 200
+    report_id = store.report_id_for(partner["id"], "2026-08")
+    report = store.report(report_id)
+    assert [item["application_name"] for item in report["application_breakdown"]] == [
+        "Message.help",
+        "AI Beauty Bot",
+    ]
+
+
 def test_confirm_ignores_edited_extracted_values(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)

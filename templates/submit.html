@@ -31,6 +31,8 @@
       <label for="attachment">{{ t("registry_file") }}</label>
       <input id="attachment" name="attachment" type="file" accept=".xlsx,.xls,.csv,.pdf" required>
       <small>{{ t("file_hint") }}</small>
+      <small>{{ t("multi_app_report_hint") }}</small>
+      <a class="text-link" href="/submit/{{ partner.token }}/template.csv?period={{ period }}">{{ t("download_report_template") }}</a>
     </div>
     <button class="button full" type="submit">{{ t("upload_and_review") }}</button>
     <p class="privacy">{{ t("privacy") }}</p>

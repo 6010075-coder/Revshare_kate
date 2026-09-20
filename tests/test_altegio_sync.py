@@ -34,9 +34,12 @@ def test_application_ids_for_partner_reads_card_links(tmp_path):
     )
     store.replace_application_links(
         partner_id,
-        [{"url": "https://app.alteg.io/app/564", "comment": "", "category": ""}],
+        [
+            {"url": "https://app.alteg.io/app/564", "comment": "", "category": ""},
+            {"url": "https://app.alteg.io/app/565", "comment": "", "category": ""},
+        ],
     )
-    assert application_ids_for_partner(store, partner_id) == [564]
+    assert application_ids_for_partner(store, partner_id) == [564, 565]
 
 
 def test_sync_period_writes_usage_from_mysql(tmp_path):
@@ -56,7 +59,10 @@ def test_sync_period_writes_usage_from_mysql(tmp_path):
     )
     store.replace_application_links(
         partner_id,
-        [{"url": "https://app.alteg.io/app/564", "comment": "", "category": ""}],
+        [
+            {"url": "https://app.alteg.io/app/564", "comment": "", "category": ""},
+            {"url": "https://app.alteg.io/app/565", "comment": "", "category": ""},
+        ],
     )
 
     cursor = MagicMock()
@@ -71,6 +77,16 @@ def test_sync_period_writes_usage_from_mysql(tmp_path):
         [{"salon_id": 101, "last_activity_at": datetime(2026, 8, 12, 9, 0, 0)}],
         [],
         [{"salon_id": 101, "last_payment_at": datetime(2026, 8, 20, 12, 0, 0)}],
+        [
+            {
+                "salon_id": 202,
+                "connected_at": datetime(2026, 2, 1, 10, 0, 0),
+                "salon_name": "Second Salon",
+            }
+        ],
+        [{"salon_id": 202, "last_activity_at": datetime(2026, 8, 15, 9, 0, 0)}],
+        [],
+        [],
     ]
     connection = MagicMock()
     connection.cursor.return_value = cursor
@@ -84,8 +100,16 @@ def test_sync_period_writes_usage_from_mysql(tmp_path):
 
     assert result.partners_synced == 1
     connected, active = store.usage(partner_id, "2026-08")
-    assert connected == {"101"}
-    assert active == {"101"}
+    assert connected == {"101", "202"}
+    assert active == {"101", "202"}
+    assert store.application_usage(partner_id, "2026-08", 564) == (
+        {"101"},
+        {"101"},
+    )
+    assert store.application_usage(partner_id, "2026-08", 565) == (
+        {"202"},
+        {"202"},
+    )
     evidence = store.usage_import(partner_id, "2026-08")
     assert evidence["source"] == "altegio_bi"
     assert evidence["payment_count"] == 1
