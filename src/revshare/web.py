@@ -1210,7 +1210,7 @@ def create_app(
 
     @app.post("/admin/partners")
     def add_partner(
-        name: str = Form(...),
+        name: str = Form(""),
         legal_name: str = Form(""),
         rate: str = Form(""),
     ):
@@ -1221,10 +1221,9 @@ def create_app(
             raise HTTPException(422, "Rate must be a number") from error
         if rate_value is not None and not 0 <= rate_value <= 1:
             raise HTTPException(422, "Rate must be between 0 and 100 percent")
-        if not name.strip():
-            raise HTTPException(422, "Partner name is required")
+        partner_name = name.strip() or f"Новый партнёр {token[-6:]}"
         app.state.store.add_partner(
-            name=name.strip(),
+            name=partner_name,
             legal_name=legal_name.strip(),
             legal_country="",
             altegio_legal_entity="",
@@ -1289,14 +1288,14 @@ def create_app(
     @app.post("/admin/partners/{partner_id}/edit")
     def edit_partner(
         partner_id: int,
-        name: str = Form(...),
+        name: str = Form(""),
         legal_name: str = Form(""),
         legal_country: str = Form(""),
         altegio_legal_entity: str = Form(""),
         contact_name: str = Form(""),
         email: str = Form(""),
         telegram: str = Form(""),
-        report_channel: str = Form(...),
+        report_channel: str = Form("email"),
         internal_comment: str = Form(""),
         application_url: list[str] = Form(default=[]),
         application_comment: list[str] = Form(default=[]),
@@ -1325,8 +1324,6 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
-        if not links:
-            raise HTTPException(422, "At least one application link is required")
         notice_settings = None
         if notice_key:
             notice_settings = settings_from_form(
@@ -1344,9 +1341,10 @@ def create_app(
             raise HTTPException(422, "Rate must be a number") from error
         if rate_value is not None and not 0 <= rate_value <= 1:
             raise HTTPException(422, "Rate must be between 0 and 100 percent")
+        partner_name = name.strip() or f"Новый партнёр {partner_id}"
         app.state.store.update_partner(
             partner_id=partner_id,
-            name=name.strip(),
+            name=partner_name,
             legal_name=legal_name.strip(),
             legal_country=canonical_country(legal_country),
             altegio_legal_entity=altegio_legal_entity,

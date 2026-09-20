@@ -1570,6 +1570,38 @@ def test_partner_can_be_saved_without_altegio_legal_entity(tmp_path: Path):
     assert saved["altegio_legal_entity"] == ""
 
 
+def test_partner_can_be_created_and_saved_without_application_link(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+
+    response = client.post("/admin/partners", data={"name": "", "legal_name": ""})
+    assert response.status_code == 200
+    partner = app.state.store.partners()[-1]
+    assert partner["name"].startswith("Новый партнёр ")
+
+    response = client.post(
+        f"/admin/partners/{partner['id']}/edit",
+        data={
+            "name": "Партнёр без приложения",
+            "legal_name": "",
+            "legal_country": "",
+            "altegio_legal_entity": "",
+            "contact_name": "",
+            "email": "",
+            "telegram": "",
+            "report_channel": "email",
+            "application_url": "",
+            "application_comment": "",
+            "rate": "",
+            "currency": "USD",
+        },
+    )
+    assert response.status_code == 200
+    saved = app.state.store.partner(partner["id"])
+    assert saved["name"] == "Партнёр без приложения"
+    assert app.state.store.application_links(partner["id"]) == []
+
+
 def test_partner_can_be_saved_without_notification_contact(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
