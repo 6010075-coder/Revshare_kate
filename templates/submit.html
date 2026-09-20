@@ -10,6 +10,10 @@
     {% if deadline_label %}
     <p class="submit-deadline">{{ t("submit_deadline", deadline=deadline_label) }}</p>
     {% endif %}
+    <div class="partner-check-guide">
+      <strong>{{ t("partner_check_title") }}</strong>
+      <p>{{ t("partner_check_text") }}</p>
+    </div>
     {% if application_links %}
     <div class="info-box application-list">
       {% for link in application_links %}

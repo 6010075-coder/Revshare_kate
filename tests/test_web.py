@@ -266,6 +266,11 @@ def test_multi_application_submission_flow(tmp_path: Path):
     store.replace_usage(
         partner["id"], "2026-08", connected_ids=["101", "102"], active_ids=["101", "102"]
     )
+    template = client.get("/submit/demo-partner/template.csv?period=2026-08")
+    assert template.status_code == 200
+    assert b"Application,Location ID,Turnover,Currency" in template.content
+    assert b"Application URL" not in template.content
+    assert b"https://app.alteg.io" not in template.content
     content = (
         "Application,Location ID,Turnover,Currency\n"
         "Message.help,101,100,USD\n"
@@ -281,6 +286,7 @@ def test_multi_application_submission_flow(tmp_path: Path):
     assert preview.status_code == 200
     assert "Message.help" in preview.text
     assert "AI Beauty Bot" in preview.text
+    assert "https://app.alteg.io" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     draft = store.report_draft(draft_token, partner["id"])
     assert [item["application_match"] for item in draft["application_breakdown"]] == [

@@ -634,12 +634,12 @@ def create_app(
         stream = io.StringIO()
         stream.write("\ufeff")
         writer = csv.writer(stream)
-        writer.writerow(["Application", "Application URL", "Location ID", "Turnover", "Currency"])
+        writer.writerow(["Application", "Location ID", "Turnover", "Currency"])
         links = app.state.store.application_links(partner["id"])
         for link in links:
-            writer.writerow([link.get("comment", ""), link.get("url", ""), "", "", partner["currency"]])
+            writer.writerow([link.get("comment", ""), "", "", partner["currency"]])
         if not links:
-            writer.writerow(["", "", "", "", partner["currency"]])
+            writer.writerow(["", "", "", partner["currency"]])
         return StreamingResponse(
             iter([stream.getvalue()]),
             media_type="text/csv; charset=utf-8",
