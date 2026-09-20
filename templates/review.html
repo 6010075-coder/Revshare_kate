@@ -4,7 +4,6 @@
 <section class="review-page">
   <div class="section-head">
     <div>
-      <p class="eyebrow">{{ t("review_page_eyebrow") }}</p>
       <h1>{{ t("review_report") }}</h1>
       <p>{{ t("review_intro") }}</p>
     </div>
@@ -36,33 +35,32 @@
       <section class="review-source review-source-file">
         <header class="review-source-head">
           <h2>{{ t("review_from_your_report_title") }}</h2>
-          <p>{{ t("review_from_your_report_hint_short") }}</p>
         </header>
-        <div class="review-summary-metrics">
-          <div class="review-summary-metric">
+        <div class="review-data-list">
+          <div>
+            <span>{{ t("reported_locations_label") }}</span>
             <strong>{{ reported_count }}</strong>
-            <span>{{ t("reported_locations") }}</span>
           </div>
-          <div class="review-summary-metric">
-            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %} <small>{{ draft.currency or "" }}</small></strong>
+          <div>
             <span>{{ t("turnover") }}</span>
+            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %} <small>{{ draft.currency or "" }}</small></strong>
           </div>
           {% if draft.reported_share is not none %}
-          <div class="review-summary-metric">
+          <div>
+            <span>{{ t("share_due_short") }}</span>
             <strong>{{ draft.reported_share }} <small>{{ draft.currency or "" }}</small></strong>
-            <span>{{ t("share_due") }}</span>
+          </div>
+          {% endif %}
+          {% if application_breakdown|length == 1 %}
+          {% set report_application = application_breakdown[0] %}
+          <div>
+            <span>{{ t("application_label") }}</span>
+            <strong>{{ report_application.application_name or report_application.application_ref or t("application_not_identified") }}</strong>
           </div>
           {% endif %}
         </div>
-        {% if application_breakdown|length == 1 %}
-        {% set report_application = application_breakdown[0] %}
-        <div class="review-application-inline">
-          <span>{{ t("application_label") }}</span>
-          <strong>{{ report_application.application_name or report_application.application_ref or t("application_not_identified") }}</strong>
-        </div>
-        {% endif %}
         <details class="ids-details">
-          <summary>{{ t("reported_locations_details") }}: {{ reported_count }}</summary>
+          <summary>{{ t("reported_locations_details", count=reported_count) }}</summary>
           {% if draft.location_ids %}
           <ul class="id-chip-list">
             {% for location_id in draft.location_ids %}
@@ -76,17 +74,19 @@
       </section>
 
       <section class="review-source review-source-check">
-        <header class="review-source-head">
-          <h2>{{ t("review_our_check_title") }}</h2>
-          <p>{{ t("review_our_check_hint") }}</p>
-        </header>
         {% if not snapshot_ready %}
         <div class="notice neutral">{{ t("snapshot_missing") }}</div>
         {% else %}
         <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
-          <div>
+          <div class="review-result-status">
             <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
-            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
+            <div class="review-result-counts">
+              <strong>{{ reported_count }}</strong>
+              <span>{{ t("review_reported_label") }}</span>
+              <b>{{ "=" if counts_match else "≠" }}</b>
+              <strong>{{ active_count }}</strong>
+              <span>{{ t("review_active_label") }}</span>
+            </div>
           </div>
           {% if not counts_match and required_discrepancies %}
           <button class="button secondary" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
@@ -121,7 +121,7 @@
             {% endif %}
             {% if item.location_ids %}
             <details class="ids-details">
-              <summary>{{ t("reported_locations_details") }}</summary>
+              <summary>{{ t("reported_locations_details", count=item.location_ids|length) }}</summary>
               <ul class="id-chip-list">
                 {% for location_id in item.location_ids %}<li>{{ location_id }}</li>{% endfor %}
               </ul>

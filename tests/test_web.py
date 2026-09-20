@@ -372,7 +372,7 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
         )
 
     assert response.status_code == 200
-    assert "Salons in your file" in response.text
+    assert "Salons</span>" in response.text
     assert ">2<" in response.text
     assert "200.0" in response.text
     assert "60.0" in response.text
@@ -431,9 +431,9 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert refreshed.status_code == 200
     assert 'data-panel="summary"' in refreshed.text
     assert 'data-panel="differences"' in refreshed.text
-    assert "Summary" in refreshed.text
-    assert "Check result" in refreshed.text
-    assert "Salons in your file" in refreshed.text
+    assert "Report" in refreshed.text
+    assert "Report data" in refreshed.text
+    assert "Salons</span>" in refreshed.text
     assert "120.0" in refreshed.text
     assert "999999" not in refreshed.text
     draft = store.report_draft(draft_token, partner["id"])
@@ -497,8 +497,9 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         )
     assert "Location ID 102" in preview.text
     assert "Why are these salons missing?" in preview.text
-    assert "Check result" in preview.text
-    assert "Salons: 1 · active in Altegio: 2" in preview.text
+    assert "Difference found" in preview.text
+    assert ">1</strong>" in preview.text
+    assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' in preview.text
     assert 'class="card review-form tab-panel active" data-panel="summary"' in preview.text
     assert "Explain the difference" in preview.text
