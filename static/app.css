@@ -315,14 +315,14 @@ textarea { resize: vertical; }
 .review-form-shell .review-form { border-top-left-radius: 0; margin-top: 0; }
 .review-form-shell .next-steps { margin: 0 0 24px; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .review-form-shell .next-steps h2 { margin-bottom: 8px; font-size: 1.02rem; }
-.review-form { padding: 30px; }
+.review-form { padding: 24px; }
 .review-source {
-  margin: 0 0 22px; padding: 20px 22px 8px;
+  margin: 0 0 18px; padding: 16px 18px 6px;
   border: 1px solid var(--line); border-radius: 18px; background: var(--paper);
 }
 .review-source-file { background: #fbfbfe; }
 .review-source-check { background: #f7f8fc; }
-.review-source-head { margin: 0 0 16px; }
+.review-source-head { margin: 0 0 12px; }
 .review-source-head h2 { font-size: 1.12rem; margin: 0 0 4px; }
 .review-source-head p { margin: 0; font-size: .84rem; max-width: 62ch; }
 .review-source .stats { margin: 0 0 16px; }

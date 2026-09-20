@@ -6,6 +6,45 @@ from typing import Any
 from revshare.altegio_sync import parse_application_id
 
 
+KNOWN_APPLICATION_NAMES = {
+    25: "NotiSend",
+    26: "Kompaas",
+    34: "Smartmetrika",
+    36: "Flowsell",
+    37: "SMSPRO.KG",
+    38: "AssistBot",
+    39: "Message.help",
+    41: "Smartmetrika",
+    46: "Sms.to",
+    49: "Fromni",
+    51: "Boomerangme",
+    54: "KPIOrg",
+    56: "Wazapa",
+    61: "WaxSms",
+    63: "Beautybot",
+    71: "Revvy",
+    74: "Phonet",
+    78: "Smartmetrika",
+    80: "SMS.md",
+    82: "Chat app",
+    83: "Chat app",
+    91: "Apifonica",
+    98: "Bondus",
+    100: "KommoCRM",
+    109: "AlphaSMS",
+    121: "Fromni Conversations",
+    1307: "Solwees.ai",
+    1372: "Stiker.ai",
+    1436: "Fast sing",
+    1575: "Staffono.ai",
+    1681: "Dconnect",
+    1786: "Ziflow",
+    1826: "Autopayroll",
+    2162: "MesseDo",
+    2337: "Chat app",
+}
+
+
 def _fold(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
@@ -15,7 +54,13 @@ def _link_id(link: dict[str, str]) -> int | None:
 
 
 def _link_label(link: dict[str, str]) -> str:
-    return str(link.get("comment") or link.get("url") or "").strip()
+    comment = str(link.get("comment") or "").strip()
+    if comment:
+        return comment
+    application_id = _link_id(link)
+    if application_id in KNOWN_APPLICATION_NAMES:
+        return KNOWN_APPLICATION_NAMES[application_id]
+    return str(link.get("url") or "").strip()
 
 
 def _match_link(ref: str, links: list[dict[str, str]]) -> dict[str, str] | None:

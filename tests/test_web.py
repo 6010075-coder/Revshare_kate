@@ -372,7 +372,7 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
         )
 
     assert response.status_code == 200
-    assert "Clients found" in response.text
+    assert "Salons in your file" in response.text
     assert ">2<" in response.text
     assert "200.0" in response.text
     assert "60.0" in response.text
