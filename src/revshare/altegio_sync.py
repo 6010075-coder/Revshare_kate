@@ -12,7 +12,7 @@ from revshare.mysql import mysql_connection, mysql_configured
 from revshare.store import Store
 
 APP_ID_RE = re.compile(r"/app/(\d+)/?$")
-MARKETPLACE_APP_ID_RE = re.compile(r"/e/mp_(\d+)(?:_[^/]+)?/?$")
+MARKETPLACE_APP_ID_RE = re.compile(r"/(?:e|m)/mp_(\d+)(?:_[^/]+)?/?$")
 
 
 @dataclass
