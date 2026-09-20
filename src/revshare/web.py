@@ -84,6 +84,32 @@ log = logging.getLogger("revshare.web")
 
 PARTNER_TABS = ("main", "settings", "history")
 REVIEW_TABS = ("summary", "differences")
+CURRENCY_SYMBOLS = {
+    "AED": "د.إ",
+    "AMD": "֏",
+    "CZK": "Kč",
+    "EUR": "€",
+    "GBP": "£",
+    "KZT": "₸",
+    "PLN": "zł",
+    "RUB": "₽",
+    "TRY": "₺",
+    "UAH": "₴",
+    "USD": "$",
+}
+
+
+def format_partner_amount(value: object, currency: object = "") -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return f"{value} {currency or ''}".strip()
+    decimals = 2 if amount % 1 else 0
+    formatted = f"{amount:,.{decimals}f}".replace(",", " ")
+    symbol = CURRENCY_SYMBOLS.get(str(currency or "").upper(), str(currency or ""))
+    return f"{formatted} {symbol}".strip()
 
 
 def review_active_tab(
@@ -463,6 +489,7 @@ def create_app(
             "months_word": lambda count: months_word(language, int(count)),
             "countries": countries_for(language),
             "format_local": format_local_datetime,
+            "format_amount": format_partner_amount,
             **values,
         }
 

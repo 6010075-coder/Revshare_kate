@@ -349,19 +349,39 @@ textarea { resize: vertical; }
 .review-data-list span { color: var(--muted); font-size: .84rem; }
 .review-data-list strong { font: 700 1.05rem Manrope; text-align: right; }
 .review-data-list strong small { font: 700 .76rem Inter; color: var(--muted); }
+.review-data-list > div.is-total {
+  margin: 7px 0; padding: 12px 14px; border: 1px solid #f2d36e; border-radius: 10px;
+  background: var(--accent-soft);
+}
+.review-data-list > div.is-total span { color: var(--amber-text); font-weight: 700; }
+.review-data-list > div.is-total strong { font-size: 1.25rem; }
 .review-result {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
 }
 .review-result-status { display: grid; gap: 8px; }
 .review-result-status > strong { font-size: .92rem; }
+.review-secondary-issue { color: inherit; font-size: .78rem; }
 .review-result-counts { display: flex; align-items: baseline; gap: 7px; color: var(--muted); }
 .review-result-counts strong { color: var(--ink); font: 700 1.35rem Manrope; }
 .review-result-counts span { font-size: .76rem; }
 .review-result-counts b { padding: 0 3px; color: var(--ink); font: 700 1rem Manrope; }
 .review-result.is-match { color: var(--green-text); background: var(--green-soft); border-color: #b7e7cc; }
 .review-result.is-mismatch { color: var(--amber-text); background: var(--amber-soft); border-color: #f5d58c; }
+.review-result.is-danger { color: var(--red-text); background: var(--red-soft); border-color: #f3b8c3; }
 .review-result .button { flex: 0 0 auto; }
+.review-difference-preview { display: grid; gap: 4px; color: var(--muted); font-size: .78rem; }
+.review-difference-preview ul { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; }
+.review-difference-preview li { color: var(--ink); font-variant-numeric: tabular-nums; }
+.review-submit-bar {
+  position: sticky; bottom: 10px; z-index: 2; display: flex; align-items: center;
+  justify-content: flex-end; gap: 18px; margin: 18px -20px -20px; padding: 12px 20px;
+  background: rgba(255,255,255,.96); border-top: 1px solid var(--line); box-shadow: 0 -8px 20px rgba(34,34,46,.06);
+}
+.review-submit-total { display: grid; gap: 1px; margin-right: auto; }
+.review-submit-total small { color: var(--muted); font-size: .72rem; }
+.review-submit-total strong { font: 700 1.05rem Manrope; }
+.review-submit-bar .button { min-width: 190px; }
 .review-compact-list { display: grid; gap: 8px; }
 .review-compact-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
@@ -428,6 +448,10 @@ textarea { resize: vertical; }
 .ids-details summary { padding: 13px 15px; cursor: pointer; font-size: .82rem; font-weight: 600; }
 .ids-details .field { padding: 0 14px 14px; margin: 0; }
 .ids-details .hint { margin: 0; padding: 0 15px 10px; font-size: .78rem; color: var(--muted); }
+.location-id-table { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0 15px 14px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.location-id-table > div { padding: 7px 10px; border-top: 1px solid var(--line); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.location-id-table > div:not(.location-id-heading) { background: #fff; }
+.location-id-table .location-id-heading { border-top: 0; color: var(--muted); background: var(--surface); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .id-chip-list {
   display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0 15px 14px; list-style: none;
 }
@@ -602,6 +626,9 @@ textarea { resize: vertical; }
   .review-result { align-items: flex-start; flex-direction: column; }
   .review-result .button { width: max-content; }
   .review-result-counts { flex-wrap: wrap; }
+  .review-submit-bar { align-items: stretch; flex-direction: column; gap: 8px; margin-left: -16px; margin-right: -16px; padding: 10px 16px; }
+  .review-submit-total { margin-right: 0; }
+  .review-submit-bar .button { width: 100%; }
   .review-compact-row { grid-template-columns: 1fr; gap: 7px; }
   .form-shell, .two-columns, .review-columns { grid-template-columns: 1fr; gap: 20px; }
   .form-intro { padding: 10px 4px; position: static; }

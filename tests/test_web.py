@@ -219,7 +219,7 @@ def test_full_submission_flow(tmp_path: Path):
         )
     assert preview.status_code == 200
     assert "Check your report" in preview.text
-    assert "1000.0" in preview.text
+    assert "1 000 $" in preview.text
     assert 'name="turnover"' not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
 
@@ -374,8 +374,8 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
     assert response.status_code == 200
     assert "Salons</span>" in response.text
     assert ">2<" in response.text
-    assert "200.0" in response.text
-    assert "60.0" in response.text
+    assert "200 $" in response.text
+    assert "60 $" in response.text
     assert 'name="turnover"' not in response.text
     assert store.dashboard("2026-08")[0]["report_id"] is None
 
@@ -434,7 +434,7 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert "Report" in refreshed.text
     assert "Report data" in refreshed.text
     assert "Salons</span>" in refreshed.text
-    assert "120.0" in refreshed.text
+    assert "120 $" in refreshed.text
     assert "999999" not in refreshed.text
     draft = store.report_draft(draft_token, partner["id"])
     assert draft["location_ids"] == ["701", "702"]
@@ -497,12 +497,12 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         )
     assert "Location ID 102" in preview.text
     assert "Why are these salons missing?" in preview.text
-    assert "Difference found" in preview.text
+    assert "Discrepancies found: 1" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' in preview.text
     assert 'class="card review-form tab-panel active" data-panel="summary"' in preview.text
-    assert "Explain the difference" in preview.text
+    assert "View differences" in preview.text
     assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(

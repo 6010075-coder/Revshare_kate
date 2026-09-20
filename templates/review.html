@@ -14,15 +14,17 @@
   <div class="notice error">{{ t(form_error) }}</div>
   {% endif %}
 
+  {% set required_count = required_discrepancies|length %}
+  {% set optional_count = optional_discrepancies|length %}
+  {% set difference_count = required_count + optional_count %}
+
   <form method="post" action="/submit/{{ partner.token }}/confirm/{{ draft.token }}" class="review-form-shell">
     <nav class="tabs" data-tabs>
       <button type="button" class="{{ 'active' if active_tab == 'summary' else '' }}" data-tab="summary">{{ t("tab_review_summary") }}</button>
-      {% if required_discrepancies or optional_discrepancies %}
+      {% if difference_count %}
       <button type="button" class="{{ 'active' if active_tab == 'differences' else '' }}" data-tab="differences">
         {{ t("tab_review_differences") }}
-        {% if required_discrepancies %}
-        <span class="tag">{{ required_discrepancies|length }}</span>
-        {% endif %}
+        <span class="tag">{{ difference_count }}</span>
       </button>
       {% endif %}
     </nav>
@@ -30,7 +32,8 @@
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
       {% set reported_count = draft.location_ids|length %}
       {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
-      {% set counts_match = snapshot_ready and reported_count == active_count %}
+      {% set counts_match = reported_count == active_count %}
+      {% set reconciliation_ok = snapshot_ready and not discrepancies %}
 
       <section class="review-source review-source-file">
         <header class="review-source-head">
@@ -43,12 +46,12 @@
           </div>
           <div>
             <span>{{ t("turnover") }}</span>
-            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %} <small>{{ draft.currency or "" }}</small></strong>
+            <strong>{{ format_amount(draft.turnover, draft.currency) }}</strong>
           </div>
           {% if draft.reported_share is not none %}
-          <div>
+          <div class="is-total">
             <span>{{ t("share_due_short") }}</span>
-            <strong>{{ draft.reported_share }} <small>{{ draft.currency or "" }}</small></strong>
+            <strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong>
           </div>
           {% endif %}
           {% if application_breakdown|length == 1 %}
@@ -62,11 +65,12 @@
         <details class="ids-details">
           <summary>{{ t("reported_locations_details", count=reported_count) }}</summary>
           {% if draft.location_ids %}
-          <ul class="id-chip-list">
+          <div class="location-id-table">
+            <div class="location-id-heading">{{ t("location_id_label") }}</div>
             {% for location_id in draft.location_ids %}
-            <li>{{ location_id }}</li>
+            <div>{{ location_id }}</div>
             {% endfor %}
-          </ul>
+          </div>
           {% else %}
           <p class="hint">{{ t("ids_not_in_file") }}</p>
           {% endif %}
@@ -77,9 +81,20 @@
         {% if not snapshot_ready %}
         <div class="notice neutral">{{ t("snapshot_missing") }}</div>
         {% else %}
-        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
+        <div class="review-result {{ 'is-match' if reconciliation_ok else 'is-danger' if required_count else 'is-mismatch' }}">
           <div class="review-result-status">
-            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
+            <strong>
+              {% if reconciliation_ok %}
+              {{ t("review_result_match") }}
+              {% elif required_count %}
+              {{ t("review_required_count", count=required_count) }}
+              {% else %}
+              {{ t("review_questions_count", count=optional_count) }}
+              {% endif %}
+            </strong>
+            {% if required_count and optional_count %}
+            <span class="review-secondary-issue">{{ t("review_questions_count", count=optional_count) }}</span>
+            {% endif %}
             <div class="review-result-counts">
               <strong>{{ reported_count }}</strong>
               <span>{{ t("review_reported_label") }}</span>
@@ -87,10 +102,20 @@
               <strong>{{ active_count }}</strong>
               <span>{{ t("review_active_label") }}</span>
             </div>
+            {% if required_count %}
+            <div class="review-difference-preview">
+              <span>{{ t("review_missing_locations") }}</span>
+              <ul>
+                {% for item in required_discrepancies[:6] %}
+                <li>Location ID {{ item.location_id }}</li>
+                {% endfor %}
+                {% if required_count > 6 %}
+                <li>{{ t("review_more_locations", count=required_count - 6) }}</li>
+                {% endif %}
+              </ul>
+            </div>
+            {% endif %}
           </div>
-          {% if not counts_match and required_discrepancies %}
-          <button class="button secondary" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
-          {% endif %}
         </div>
         {% endif %}
       </section>
@@ -111,7 +136,7 @@
               {% endif %}
             </div>
             <div class="application-breakdown-meta">
-              <span>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</span>
+              <span>{{ format_amount(item.turnover, item.currency) }}</span>
               <span>{{ item.location_ids|length }} {{ t("reported_locations_short") }}</span>
             </div>
             {% if item.application_usage_ready %}
@@ -122,9 +147,10 @@
             {% if item.location_ids %}
             <details class="ids-details">
               <summary>{{ t("reported_locations_details", count=item.location_ids|length) }}</summary>
-              <ul class="id-chip-list">
-                {% for location_id in item.location_ids %}<li>{{ location_id }}</li>{% endfor %}
-              </ul>
+              <div class="location-id-table">
+                <div class="location-id-heading">{{ t("location_id_label") }}</div>
+                {% for location_id in item.location_ids %}<div>{{ location_id }}</div>{% endfor %}
+              </div>
             </details>
             {% endif %}
           </article>
@@ -138,11 +164,16 @@
         <textarea id="comment" name="comment" rows="3" placeholder="{{ t('comment_placeholder') }}">{{ comment|default("") }}</textarea>
       </div>
       <p class="privacy">{{ t("review_values_hint") }}</p>
-      {% if required_discrepancies %}
-      <button class="button full" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
-      {% else %}
-      <button class="button full" type="submit">{{ t("confirm_submit") }}</button>
-      {% endif %}
+      <div class="review-submit-bar">
+        {% if draft.reported_share is not none %}
+        <span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>
+        {% endif %}
+        {% if required_discrepancies %}
+          <button class="button" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
+        {% else %}
+        <button class="button" type="submit">{{ t("confirm_submit") }}</button>
+        {% endif %}
+      </div>
     </section>
 
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'differences' else '' }}" data-panel="differences">
@@ -244,7 +275,12 @@
         <div class="notice neutral">{{ t("review_no_differences") }}</div>
       {% endif %}
 
-      <button class="button full" type="submit">{{ t("confirm_submit") }}</button>
+      <div class="review-submit-bar">
+        {% if draft.reported_share is not none %}
+        <span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>
+        {% endif %}
+        <button class="button" type="submit">{{ t("confirm_submit") }}</button>
+      </div>
     </section>
   </form>
 </section>
