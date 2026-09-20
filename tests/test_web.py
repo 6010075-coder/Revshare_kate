@@ -74,6 +74,53 @@ def test_parse_partner_report_calculates_share(tmp_path: Path):
     assert "share_calculated" in parsed.notes
 
 
+def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+    store: Store = app.state.store
+    partner = store.partner_by_token("demo-partner")
+    store.replace_usage(
+        partner["id"],
+        "2026-08",
+        connected_ids=["101", "102"],
+        active_ids=["101", "102"],
+        location_details={"102": {"name": "Demo Salon"}},
+    )
+    original = tmp_path / "original.csv"
+    original.write_text("Location ID,Turnover\n101,$100\n", encoding="utf-8")
+    with original.open("rb") as handle:
+        preview = client.post(
+            "/submit/demo-partner/parse",
+            data={"period": "2026-08"},
+            files={"attachment": ("original.csv", handle, "text/csv")},
+        )
+    draft_token = str(preview.url).rstrip("/").split("/")[-1]
+    full = client.get(f"/submit/demo-partner/review/{draft_token}/full-report.csv")
+    assert full.status_code == 200
+    assert "Название салона" in full.text
+    assert "Demo Salon" in full.text
+    assert "102,Demo Salon,Да,Да,Нет" in full.text
+
+    completed = tmp_path / "completed.csv"
+    completed.write_text(
+        "Приложение,Location ID,Название салона,Есть в Altegio,Активен в месяце,Участвует в расчёте,Причина,Оборот,Валюта\n"
+        ",101,,Да,Да,Да,,,USD\n"
+        ",102,Demo Salon,Да,Да,Нет,Бесплатный период,,,USD\n"
+        "Итого оборот,,,,,,,,100,USD\n"
+        "Итого revshare,,,,,,,,20,USD\n",
+        encoding="utf-8",
+    )
+    with completed.open("rb") as handle:
+        reviewed = client.post(
+            "/submit/demo-partner/parse",
+            data={"period": "2026-08"},
+            files={"attachment": ("completed.csv", handle, "text/csv")},
+        )
+    assert reviewed.status_code == 200
+    assert "Reasons read: 1 of 1" in reviewed.text
+    assert "Reason added" in reviewed.text
+
+
 def test_parse_recommended_partner_report_without_cached_formulas(tmp_path: Path):
     path = tmp_path / "partner-report.xlsx"
     workbook = Workbook()
@@ -496,8 +543,8 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert "Location ID 102" in preview.text
-    assert "Why are these salons missing?" in preview.text
-    assert "Discrepancies found: 1" in preview.text
+    assert "Check the discrepancies" in preview.text
+    assert "Active salons missing from report: 1" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' in preview.text
@@ -515,9 +562,8 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         "Demo Salon,2024-03-10,2026-08-15T12:00:00,Yes"
     ) in differences.text
     assert "101" not in differences.text
-    assert "What you can do" in preview.text
-    assert "Download differences, CSV" in preview.text
-    assert "Upload corrected report" in preview.text
+    assert "Download full report" in preview.text
+    assert "Upload filled report" in preview.text
 
     missing_reason = client.post(
         f"/submit/demo-partner/confirm/{draft_token}",
@@ -995,8 +1041,7 @@ def test_partner_sees_long_idle_installations_on_review(tmp_path: Path):
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert preview.status_code == 200
-    assert "Idle for 3 months or longer: 1" in preview.text
-    assert "301 · 3 months" in preview.text
+    assert "Connected but inactive: 2" in preview.text
 
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     exported = client.get(
@@ -1223,8 +1268,7 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
     assert preview.status_code == 200
     assert "Location ID 201" not in preview.text
     assert "Connected but inactive: 3" in preview.text
-    assert "Explaining them is optional." in preview.text
-    assert "None of them pay for the app" in preview.text
+    assert "If these salons should not be included either, add a reason" in preview.text
     assert "Explain active clients missing from the report" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
 

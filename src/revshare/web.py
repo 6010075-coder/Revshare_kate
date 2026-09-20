@@ -41,7 +41,7 @@ from revshare.application_breakdown import add_usage_checks, breakdown_for_repor
 from revshare.mysql import mysql_configured
 from revshare.dispatch import partner_letter, send_due_notices, send_partner_notice
 from revshare.mailer import mail_ready
-from revshare.extract import parse_partner_report
+from revshare.extract import _normalise_report_reason, parse_partner_report
 from revshare.fx import SUPPORTED_CURRENCIES, fetch_month_average_rates, valid_period
 from revshare.i18n import (
     ADMIN_LANGUAGES,
@@ -110,6 +110,18 @@ def format_partner_amount(value: object, currency: object = "") -> str:
     formatted = f"{amount:,.{decimals}f}".replace(",", " ")
     symbol = CURRENCY_SYMBOLS.get(str(currency or "").upper(), str(currency or ""))
     return f"{formatted} {symbol}".strip()
+
+
+def review_reason_summary(
+    required_discrepancies: list[dict], report_reasons: dict[str, str]
+) -> tuple[int, int]:
+    total = len(required_discrepancies)
+    filled = sum(
+        1
+        for item in required_discrepancies
+        if report_reasons.get(str(item["location_id"]))
+    )
+    return filled, total
 
 
 def review_active_tab(
@@ -745,6 +757,8 @@ def create_app(
         if not draft:
             raise HTTPException(404, "Draft not found")
         path = UPLOADS / draft["attachment"]
+        report_reasons: dict[str, str] = {}
+        report_reason_details: dict[str, str] = {}
         if path.exists():
             parsed = parse_partner_report(
                 path,
@@ -755,6 +769,8 @@ def create_app(
             application_breakdown = breakdown_for_report(
                 parsed, app.state.store.application_links(partner["id"])
             )
+            report_reasons = parsed.report_reasons
+            report_reason_details = parsed.report_reason_details
             if (
                 parsed.location_ids != draft["location_ids"]
                 or parsed.turnover != draft["turnover"]
@@ -781,7 +797,11 @@ def create_app(
         long_idle = long_idle_locations(
             app.state.store, partner["id"], draft["period"], discrepancies
         )
+        location_details = app.state.store.usage_location_details(
+            partner["id"], draft["period"]
+        )
         required = [item for item in discrepancies if item["required"]]
+        reasons_filled, reasons_total = review_reason_summary(required, report_reasons)
         return TEMPLATES.TemplateResponse(
             request,
             "review.html",
@@ -800,12 +820,93 @@ def create_app(
                 ],
                 application_breakdown=application_breakdown,
                 long_idle=long_idle,
+                location_details=location_details,
+                report_reasons=report_reasons,
+                report_reason_details=report_reason_details,
+                reasons_filled=reasons_filled,
+                reasons_total=reasons_total,
                 idle_months_threshold=app.state.store.idle_months_threshold(),
                 form_error=None,
                 active_tab=review_active_tab(
                     request, required_count=len(required)
                 ),
             ),
+        )
+
+    @app.get("/submit/{token}/review/{draft_token}/full-report.csv")
+    def download_full_report(token: str, draft_token: str):
+        """Download a complete, editable salon register for the partner."""
+        partner = app.state.store.partner_by_token(token)
+        if not partner:
+            raise HTTPException(404, "Partner not found")
+        draft = app.state.store.report_draft(draft_token, partner["id"])
+        if not draft:
+            raise HTTPException(404, "Draft not found")
+        connected, active = app.state.store.usage(partner["id"], draft["period"])
+        reported = set(draft["location_ids"])
+        all_ids = sorted(connected | active | reported)
+        details = app.state.store.usage_location_details(partner["id"], draft["period"])
+        existing_reasons: dict[str, str] = {}
+        existing_details: dict[str, str] = {}
+        path = UPLOADS / draft["attachment"]
+        if path.exists():
+            parsed = parse_partner_report(
+                path,
+                rate=partner["rate"],
+                default_currency=partner["currency"],
+                period=draft["period"],
+            )
+            existing_reasons = parsed.report_reasons
+            existing_details = parsed.report_reason_details
+        application = ""
+        if len(draft.get("application_breakdown", [])) == 1:
+            item = draft["application_breakdown"][0]
+            application = str(item.get("application_name") or item.get("application_ref") or "")
+        stream = io.StringIO()
+        stream.write("\ufeff")
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "Приложение",
+                "Location ID",
+                "Название салона",
+                "Есть в Altegio",
+                "Активен в месяце",
+                "Участвует в расчёте",
+                "Причина",
+                "Оборот",
+                "Валюта",
+            ]
+        )
+        for location_id in all_ids:
+            detail = details.get(location_id, {})
+            included = location_id in reported
+            reason = existing_reasons.get(location_id, "")
+            reason_detail = existing_details.get(location_id, "")
+            if reason == "other" and reason_detail:
+                reason = f"Другое: {reason_detail}"
+            writer.writerow(
+                [
+                    application,
+                    location_id,
+                    detail.get("location_name") or "",
+                    "Да" if location_id in connected else "Нет",
+                    "Да" if location_id in active else "Нет",
+                    "Да" if included else "Нет",
+                    reason,
+                    "",
+                    draft["currency"] or partner["currency"],
+                ]
+            )
+        writer.writerow([])
+        writer.writerow(["Итого оборот", "", "", "", "", "", "", draft["turnover"] or "", draft["currency"] or partner["currency"]])
+        writer.writerow(["Итого revshare", "", "", "", "", "", "", draft["reported_share"] or "", draft["currency"] or partner["currency"]])
+        return StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="revshare-full-{draft["period"]}.csv"'
+            },
         )
 
     def difference_csv_extra(
@@ -927,6 +1028,18 @@ def create_app(
         long_idle = long_idle_locations(
             app.state.store, partner["id"], draft["period"], discrepancies
         )
+        file_reasons: dict[str, str] = {}
+        file_reason_details: dict[str, str] = {}
+        path = UPLOADS / draft["attachment"]
+        if path.exists():
+            parsed = parse_partner_report(
+                path,
+                rate=partner["rate"],
+                default_currency=partner["currency"],
+                period=draft["period"],
+            )
+            file_reasons = parsed.report_reasons
+            file_reason_details = parsed.report_reason_details
         submitted_claims = {
             (location, kind): {"reason": reason, "detail": detail.strip()}
             for location, kind, reason, detail in zip(
@@ -941,20 +1054,20 @@ def create_app(
                 claims.append({**item, "reason": "no_payment", "detail": ""})
                 continue
             submitted = submitted_claims.get((item["location_id"], item["kind"]))
-            item["selected_reason"] = submitted["reason"] if submitted else ""
-            item["selected_detail"] = submitted["detail"] if submitted else ""
+            file_reason = file_reasons.get(str(item["location_id"]), "")
+            file_detail = file_reason_details.get(str(item["location_id"]), "")
+            reason = file_reason or (submitted["reason"] if submitted else "")
+            detail = file_detail or (submitted["detail"] if submitted else "")
             required = bool(item["required"])
-            if required and (
-                not submitted or submitted["reason"] not in CLAIM_REASON_KEYS
-            ):
+            if required and reason not in CLAIM_REASON_KEYS:
                 invalid_claims = True
                 continue
-            if submitted and submitted["reason"] == "other" and not submitted["detail"]:
+            if reason == "other" and not detail:
                 if required:
                     invalid_claims = True
                 continue
-            if submitted and submitted["reason"] in CLAIM_REASON_KEYS:
-                claims.append({**item, **submitted})
+            if reason in CLAIM_REASON_KEYS:
+                claims.append({**item, "reason": reason, "detail": detail})
         if invalid_claims:
             required = [item for item in discrepancies if item["required"]]
             return TEMPLATES.TemplateResponse(
@@ -977,6 +1090,13 @@ def create_app(
                         partner["id"], draft["period"], draft.get("application_breakdown", [])
                     ),
                     long_idle=long_idle,
+                    location_details=app.state.store.usage_location_details(
+                        partner["id"], draft["period"]
+                    ),
+                    report_reasons=file_reasons,
+                    report_reason_details=file_reason_details,
+                    reasons_filled=review_reason_summary(required, file_reasons)[0],
+                    reasons_total=len(required),
                     idle_months_threshold=app.state.store.idle_months_threshold(),
                     form_error="explanations_required",
                     comment=comment,

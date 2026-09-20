@@ -382,6 +382,38 @@ textarea { resize: vertical; }
 .review-submit-total small { color: var(--muted); font-size: .72rem; }
 .review-submit-total strong { font: 700 1.05rem Manrope; }
 .review-submit-bar .button { min-width: 190px; }
+
+.review-guidance {
+  display: grid;
+  gap: 10px;
+  padding: 18px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+.review-guidance h2, .review-file-check h2 { margin: 0; }
+.review-guidance > p:not(.eyebrow), .review-file-check > p { max-width: 720px; margin: 0; color: var(--muted); }
+.review-progress {
+  width: fit-content;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.review-file-actions { align-items: center; margin-top: 2px; }
+.review-file-actions .button { min-width: 230px; }
+.review-file-check { display: grid; gap: 10px; padding: 20px 0; }
+.review-salon-list { display: grid; gap: 6px; }
+.review-salon-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff;
+}
+.review-salon-row > div { display: grid; gap: 2px; min-width: 0; }
+.review-salon-row > div span { color: var(--muted); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; }
+.status-chip { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; font-size: .72rem; font-weight: 700; }
+.status-chip.is-match { color: var(--green-text); background: var(--green-soft); }
+.status-chip.is-mismatch { color: var(--amber-text); background: var(--amber-soft); }
+.review-additional-check { padding: 14px 0; border-top: 1px solid var(--line); }
+.review-additional-check summary { cursor: pointer; font-weight: 700; }
+.review-additional-check .text-link { display: inline-block; margin-top: 6px; }
 .review-compact-list { display: grid; gap: 8px; }
 .review-compact-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
