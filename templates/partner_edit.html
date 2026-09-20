@@ -16,8 +16,7 @@
 <section class="card partner-links-card">
   <div>
     <p class="eyebrow">{{ t("partner_links") }}</p>
-    <h2>{{ t("open_form") }}</h2>
-    <a class="text-link" href="/submit/{{ partner.token }}?period={{ current_period }}" target="_blank" rel="noopener">/submit/{{ partner.token }}?period={{ current_period }}</a>
+    <a class="button secondary partner-form-link" href="/submit/{{ partner.token }}?period={{ current_period }}" target="_blank" rel="noopener">{{ t("open_form") }}</a>
   </div>
   {% if application_links %}
   <div>
