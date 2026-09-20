@@ -315,14 +315,14 @@ textarea { resize: vertical; }
 .review-form-shell .review-form { border-top-left-radius: 0; margin-top: 0; }
 .review-form-shell .next-steps { margin: 0 0 24px; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .review-form-shell .next-steps h2 { margin-bottom: 8px; font-size: 1.02rem; }
-.review-form { padding: 24px; }
+.review-form { padding: 20px; }
 .review-source {
-  margin: 0 0 18px; padding: 16px 18px 6px;
+  margin: 0 0 14px; padding: 14px 16px 4px;
   border: 1px solid var(--line); border-radius: 18px; background: var(--paper);
 }
 .review-source-file { background: #fbfbfe; }
 .review-source-check { background: #f7f8fc; }
-.review-source-head { margin: 0 0 12px; }
+.review-source-head { margin: 0 0 10px; }
 .review-source-head h2 { font-size: 1.12rem; margin: 0 0 4px; }
 .review-source-head p { margin: 0; font-size: .84rem; max-width: 62ch; }
 .review-source .stats { margin: 0 0 16px; }
@@ -336,6 +336,40 @@ textarea { resize: vertical; }
   border-radius: 99px; background: var(--paper); border: 1px solid var(--line);
   color: var(--amber-text); font-size: .68rem; font-weight: 700;
 }
+.review-summary-metrics { display: flex; gap: 10px; margin: 0 0 10px; }
+.review-summary-metric {
+  min-width: 150px; padding: 11px 14px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--paper);
+}
+.review-summary-metric strong { display: block; font: 700 1.35rem Manrope; }
+.review-summary-metric strong small { font: 700 .8rem Inter; color: var(--muted); }
+.review-summary-metric span { display: block; margin-top: 2px; color: var(--muted); font-size: .76rem; }
+.review-application-inline {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px;
+  color: var(--muted); font-size: .84rem;
+}
+.review-application-inline strong { color: var(--ink); }
+.review-result {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+}
+.review-result > div { display: grid; gap: 2px; }
+.review-result strong { font-size: .92rem; }
+.review-result span { color: var(--muted); font-size: .78rem; }
+.review-result.is-match { color: var(--green-text); background: var(--green-soft); border-color: #b7e7cc; }
+.review-result.is-mismatch { color: var(--amber-text); background: var(--amber-soft); border-color: #f5d58c; }
+.review-result .button { flex: 0 0 auto; }
+.review-compact-list { display: grid; gap: 8px; }
+.review-compact-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid #e3e5ee; border-radius: 10px; background: #fff;
+}
+.review-compact-app { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.review-compact-app strong { overflow-wrap: anywhere; }
+.review-compact-row .ids-details { grid-column: 1 / -1; margin: 0; }
+.review-application-status { padding: 3px 8px; border-radius: 99px; font-size: .7rem; font-weight: 700; white-space: nowrap; }
+.review-application-status.is-match { color: var(--green-text); background: var(--green-soft); }
+.review-application-status.is-mismatch { color: var(--amber-text); background: var(--amber-soft); }
 .application-breakdown-list { display: grid; gap: 12px; }
 .application-breakdown-card { display: grid; gap: 8px; padding: 14px; border: 1px solid #e3e5ee; border-radius: 12px; background: #fff; }
 .application-breakdown-card > div:first-child { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -562,6 +596,11 @@ textarea { resize: vertical; }
   .stats article { padding: 16px; }
   .review-check-stats, .review-compare-pair { grid-template-columns: 1fr; }
   .review-source { padding: 16px 16px 4px; }
+  .review-summary-metrics { flex-direction: column; }
+  .review-summary-metric { min-width: 0; }
+  .review-result { align-items: flex-start; flex-direction: column; }
+  .review-result .button { width: max-content; }
+  .review-compact-row { grid-template-columns: 1fr; gap: 7px; }
   .form-shell, .two-columns, .review-columns { grid-template-columns: 1fr; gap: 20px; }
   .form-intro { padding: 10px 4px; position: static; }
   .form-card { padding: 22px 18px; }

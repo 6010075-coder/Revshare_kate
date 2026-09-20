@@ -40,31 +40,30 @@
         <header class="review-source-head">
           <p class="eyebrow">{{ t("review_from_your_report") }}</p>
           <h2>{{ t("review_from_your_report_title") }}</h2>
-          <p>{{ t("review_from_your_report_hint") }}</p>
         </header>
-        <section class="stats review-file-stats">
-          <article>
+        <div class="review-summary-metrics">
+          <div class="review-summary-metric">
             <strong>{{ reported_count }}</strong>
             <span>{{ t("reported_locations") }}</span>
-            <small>{{ t("source_in_report") }}</small>
-          </article>
-        </section>
-        <div class="field-grid">
-          <div class="field grow read-only-count">
-            <label>{{ t("turnover") }}</label>
-            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %}</strong>
           </div>
-          <div class="field compact read-only-count">
-            <label>{{ t("currency") }}</label>
-            <strong>{{ draft.currency or "—" }}</strong>
+          <div class="review-summary-metric">
+            <strong>{% if draft.turnover is not none %}{{ draft.turnover }}{% else %}—{% endif %} <small>{{ draft.currency or "" }}</small></strong>
+            <span>{{ t("turnover") }}</span>
           </div>
+          {% if draft.reported_share is not none %}
+          <div class="review-summary-metric">
+            <strong>{{ draft.reported_share }} <small>{{ draft.currency or "" }}</small></strong>
+            <span>{{ t("share_due") }}</span>
+          </div>
+          {% endif %}
         </div>
-        <div class="field-grid">
-          <div class="field grow read-only-count">
-            <label>{{ t("share_due") }}</label>
-            <strong>{% if draft.reported_share is not none %}{{ draft.reported_share }}{% else %}—{% endif %}</strong>
-          </div>
+        {% if application_breakdown|length == 1 %}
+        {% set report_application = application_breakdown[0] %}
+        <div class="review-application-inline">
+          <span>{{ t("application_label") }}</span>
+          <strong>{{ report_application.application_name or report_application.application_ref or t("application_not_identified") }}</strong>
         </div>
+        {% endif %}
         <details class="ids-details">
           <summary>{{ t("reported_locations_details") }}: {{ reported_count }}</summary>
           {% if draft.location_ids %}
@@ -83,75 +82,45 @@
         <header class="review-source-head">
           <p class="eyebrow">{{ t("review_our_check") }}</p>
           <h2>{{ t("review_our_check_title") }}</h2>
-          <p>{{ t("review_our_check_hint") }}</p>
         </header>
         {% if not snapshot_ready %}
         <div class="notice neutral">{{ t("snapshot_missing") }}</div>
         {% else %}
-        <div class="review-compare {{ 'is-match' if counts_match else 'is-mismatch' }}">
-          <div class="review-compare-pair">
-            <div>
-              <span>{{ t("compare_in_report") }}</span>
-              <strong>{{ reported_count }}</strong>
-            </div>
-            <div>
-              <span>{{ t("compare_active") }}</span>
-              <strong>{{ active_count }}</strong>
-            </div>
+        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
+          <div>
+            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
+            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
           </div>
-          {% if counts_match %}
-          <p>{{ t("counts_match", reported=reported_count, active=active_count) }}</p>
-          {% else %}
-          <p>{{ t("counts_mismatch", reported=reported_count, active=active_count) }}</p>
+          {% if not counts_match %}
           <button class="button secondary" type="button" data-open-tab="differences">{{ t("open_differences_tab") }}</button>
           {% endif %}
         </div>
         {% endif %}
-        <section class="stats review-check-stats">
-          <article class="is-primary">
-            <strong>{{ active_count if snapshot_ready else "—" }}</strong>
-            <span>{{ t("active_during_month") }}</span>
-            <small>{{ t("active_during_month_hint") }}</small>
-          </article>
-          <article>
-            <strong>{{ connected_count if snapshot_ready else "—" }}</strong>
-            <span>{{ t("connected_month_end") }}</span>
-            <small>{{ t("connected_month_end_hint") }}</small>
-          </article>
-          <article>
-            <strong>{{ (partner.rate * 100)|round(2) if partner.rate is not none else "—" }}{% if partner.rate is not none %}%{% endif %}</strong>
-            <span>{{ t("contract_rate") }}</span>
-            <small>{{ t("source_our_check") }}</small>
-          </article>
-        </section>
       </section>
 
-      {% if application_breakdown %}
+      {% if application_breakdown|length > 1 %}
       <section class="review-source application-breakdown">
         <header class="review-source-head">
           <p class="eyebrow">{{ t("applications_short") }}</p>
           <h2>{{ t("application_breakdown") }}</h2>
-          <p>{{ t("application_breakdown_hint") }}</p>
         </header>
-        <div class="application-breakdown-list">
+        <div class="review-compact-list">
           {% for item in application_breakdown %}
-          <article class="application-breakdown-card">
-            <div>
+          <article class="review-compact-row">
+            <div class="review-compact-app">
               <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
               {% if item.application_match != "matched" %}
               <span class="tag warning">{{ t("application_not_matched") }}</span>
               {% endif %}
             </div>
             <div class="application-breakdown-meta">
-              <span>{{ t("turnover") }}: <strong>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</strong></span>
-              <span>{{ t("reported_locations") }}: <strong>{{ item.location_ids|length }}</strong></span>
+              <span>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</span>
+              <span>{{ item.location_ids|length }} {{ t("reported_locations_short") }}</span>
             </div>
             {% if item.application_usage_ready %}
-            <div class="application-breakdown-check {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
-              {{ t("application_active_locations", active=item.application_active_count, reported=item.location_ids|length) }}
-              {% if item.application_missing_active %}<small>{{ t("application_usage_missing_count", count=item.application_missing_active|length) }}</small>{% endif %}
-              {% if item.application_unknown_locations %}<small>{{ t("application_usage_unknown_count", count=item.application_unknown_locations|length) }}</small>{% endif %}
-            </div>
+            <span class="review-application-status {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
+              {{ t("review_result_match") if not item.application_missing_active and not item.application_unknown_locations else t("review_result_mismatch") }}
+            </span>
             {% endif %}
             {% if item.location_ids %}
             <details class="ids-details">

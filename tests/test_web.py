@@ -434,7 +434,7 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert "Report summary" in refreshed.text
     assert "From your report" in refreshed.text
     assert "Our check" in refreshed.text
-    assert "in the report" in refreshed.text
+    assert "Salons in your file" in refreshed.text
     assert "120.0" in refreshed.text
     assert "999999" not in refreshed.text
     draft = store.report_draft(draft_token, partner["id"])
@@ -500,11 +500,9 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
     assert "Explain active clients missing from the report" in preview.text
     assert "From your report" in preview.text
     assert "Our check" in preview.text
-    assert "These figures do not match: 1 in the report, 2 active." in preview.text
+    assert "In the report: 1 · active in Altegio: 2" in preview.text
     assert 'data-open-tab="differences"' in preview.text
-    assert preview.text.index("Active during the month") < preview.text.index(
-        "Connected at month end"
-    )
+    assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(
         f"/submit/demo-partner/review/{draft_token}/differences.csv"
