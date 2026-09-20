@@ -218,7 +218,7 @@ def test_full_submission_flow(tmp_path: Path):
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert preview.status_code == 200
-    assert "Review report" in preview.text
+    assert "Check your report" in preview.text
     assert "1000.0" in preview.text
     assert 'name="turnover"' not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
@@ -431,9 +431,9 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert refreshed.status_code == 200
     assert 'data-panel="summary"' in refreshed.text
     assert 'data-panel="differences"' in refreshed.text
-    assert "Report summary" in refreshed.text
-    assert "From your report" in refreshed.text
-    assert "Our check" in refreshed.text
+    assert "Summary" in refreshed.text
+    assert "Your file" in refreshed.text
+    assert "Result" in refreshed.text
     assert "Salons in your file" in refreshed.text
     assert "120.0" in refreshed.text
     assert "999999" not in refreshed.text
@@ -497,11 +497,13 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert "Location ID 102" in preview.text
-    assert "Explain active clients missing from the report" in preview.text
-    assert "From your report" in preview.text
-    assert "Our check" in preview.text
-    assert "In the report: 1 · active in Altegio: 2" in preview.text
+    assert "Why are these salons missing?" in preview.text
+    assert "Your file" in preview.text
+    assert "Result" in preview.text
+    assert "In the file: 1 · active in Altegio: 2" in preview.text
     assert 'data-open-tab="differences"' in preview.text
+    assert 'class="card review-form tab-panel active" data-panel="summary"' in preview.text
+    assert "Explain the difference" in preview.text
     assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(
@@ -514,7 +516,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         "Demo Salon,2024-03-10,2026-08-15T12:00:00,Yes"
     ) in differences.text
     assert "101" not in differences.text
-    assert "What to do next" in preview.text
+    assert "What you can do" in preview.text
     assert "Download differences, CSV" in preview.text
     assert "Upload corrected report" in preview.text
 
@@ -1221,8 +1223,8 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
         )
     assert preview.status_code == 200
     assert "Location ID 201" not in preview.text
-    assert "Connected without API activity: 3" in preview.text
-    assert "worth disconnecting" in preview.text
+    assert "Connected but inactive: 3" in preview.text
+    assert "Explaining them is optional." in preview.text
     assert "None of them pay for the app" in preview.text
     assert "Explain active clients missing from the report" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]

@@ -95,7 +95,7 @@ def review_active_tab(
     tab = request.query_params.get("tab", "")
     if tab in REVIEW_TABS:
         return tab
-    if form_error == "explanations_required" or required_count:
+    if form_error == "explanations_required":
         return "differences"
     return "summary"
 

@@ -15,26 +15,43 @@
   <div class="notice error">{{ t(form_error) }}</div>
   {% endif %}
 
-  <div class="partner-check-guide review-check-guide">
-    <strong>{{ t("partner_check_title") }}</strong>
-    <p>{{ t("partner_check_text") }}</p>
-  </div>
-
   <form method="post" action="/submit/{{ partner.token }}/confirm/{{ draft.token }}" class="review-form-shell">
     <nav class="tabs" data-tabs>
       <button type="button" class="{{ 'active' if active_tab == 'summary' else '' }}" data-tab="summary">{{ t("tab_review_summary") }}</button>
+      {% if required_discrepancies or optional_discrepancies %}
       <button type="button" class="{{ 'active' if active_tab == 'differences' else '' }}" data-tab="differences">
         {{ t("tab_review_differences") }}
         {% if required_discrepancies %}
         <span class="tag">{{ required_discrepancies|length }}</span>
         {% endif %}
       </button>
+      {% endif %}
     </nav>
 
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
       {% set reported_count = draft.location_ids|length %}
       {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
       {% set counts_match = snapshot_ready and reported_count == active_count %}
+
+      <section class="review-source review-source-check">
+        <header class="review-source-head">
+          <p class="eyebrow">{{ t("review_our_check") }}</p>
+          <h2>{{ t("review_our_check_title") }}</h2>
+        </header>
+        {% if not snapshot_ready %}
+        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
+        {% else %}
+        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
+          <div>
+            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
+            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
+          </div>
+          {% if not counts_match and required_discrepancies %}
+          <button class="button secondary" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
+          {% endif %}
+        </div>
+        {% endif %}
+      </section>
 
       <section class="review-source review-source-file">
         <header class="review-source-head">
@@ -76,26 +93,6 @@
           <p class="hint">{{ t("ids_not_in_file") }}</p>
           {% endif %}
         </details>
-      </section>
-
-      <section class="review-source review-source-check">
-        <header class="review-source-head">
-          <p class="eyebrow">{{ t("review_our_check") }}</p>
-          <h2>{{ t("review_our_check_title") }}</h2>
-        </header>
-        {% if not snapshot_ready %}
-        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
-        {% else %}
-        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
-          <div>
-            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
-            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
-          </div>
-          {% if not counts_match %}
-          <button class="button secondary" type="button" data-open-tab="differences">{{ t("open_differences_tab") }}</button>
-          {% endif %}
-        </div>
-        {% endif %}
       </section>
 
       {% if application_breakdown|length > 1 %}
@@ -142,9 +139,10 @@
       </div>
       <p class="privacy">{{ t("review_values_hint") }}</p>
       {% if required_discrepancies %}
-      <p class="hint">{{ t("review_switch_to_differences") }}</p>
-      {% endif %}
+      <button class="button full" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
+      {% else %}
       <button class="button full" type="submit">{{ t("confirm_submit") }}</button>
+      {% endif %}
     </section>
 
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'differences' else '' }}" data-panel="differences">
