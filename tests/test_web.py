@@ -1488,6 +1488,7 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
             "email": "finance@example.com",
             "telegram": "@team",
             "report_channel": "email",
+            "internal_comment": "Проверить новый договор в октябре",
             "application_url": [
                 "https://app.alteg.io/app/42",
                 "https://app.alteg.io/app/43",
@@ -1505,6 +1506,7 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert saved["altegio_legal_entity"] == "Open HC"
     assert saved["contact_name"] == "Anna"
     assert saved["report_channel"] == "email"
+    assert saved["internal_comment"] == "Проверить новый договор в октябре"
     assert saved["rate"] == 0.30
     assert app.state.store.application_links(partner["id"]) == [
         {
@@ -1521,6 +1523,10 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     partner_form = client.get(f"/submit/{saved['token']}")
     assert "https://app.alteg.io/app/42" in partner_form.text
     assert "https://app.alteg.io/app/43" in partner_form.text
+    edit_page = client.get(f"/admin/partners/{partner['id']}/edit")
+    assert 'href="https://app.alteg.io/app/42"' in edit_page.text
+    assert f'href="/submit/{saved["token"]}?period=' in edit_page.text
+    assert "Проверить новый договор в октябре" in edit_page.text
     assert "Delete partner" in client.get(f"/admin/partners/{partner['id']}/edit").text
     assert "Delete partner" not in client.get("/admin/partners").text
 

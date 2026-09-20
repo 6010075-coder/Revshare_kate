@@ -1297,6 +1297,7 @@ def create_app(
         email: str = Form(""),
         telegram: str = Form(""),
         report_channel: str = Form(...),
+        internal_comment: str = Form(""),
         application_url: list[str] = Form(default=[]),
         application_comment: list[str] = Form(default=[]),
         application_category: list[str] = Form(default=[]),
@@ -1357,6 +1358,7 @@ def create_app(
             currency=currency.upper(),
             notice_settings=notice_settings,
             category=links[0]["category"] if links else "",
+            internal_comment=internal_comment.strip(),
         )
         app.state.store.replace_application_links(partner_id, links)
         return RedirectResponse("/admin/partners", status_code=303)

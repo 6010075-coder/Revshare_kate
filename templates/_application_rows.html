@@ -5,6 +5,7 @@
       <div class="field grow">
         <label>{{ t("application_url") }}</label>
         <input name="application_url" type="url" value="{{ item.url }}" placeholder="https://">
+        <a class="text-link application-row-link" href="{{ item.url }}" target="_blank" rel="noopener">{{ item.url }}</a>
       </div>
       <div class="field grow">
         <label>{{ t("application_comment") }}</label>

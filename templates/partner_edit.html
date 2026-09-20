@@ -13,6 +13,24 @@
 
 {% if saved %}<div class="notice neutral">{{ t("changes_saved") }}</div>{% endif %}
 
+<section class="card partner-links-card">
+  <div>
+    <p class="eyebrow">{{ t("partner_links") }}</p>
+    <h2>{{ t("open_form") }}</h2>
+    <a class="text-link" href="/submit/{{ partner.token }}?period={{ current_period }}" target="_blank" rel="noopener">/submit/{{ partner.token }}?period={{ current_period }}</a>
+  </div>
+  {% if application_links %}
+  <div>
+    <p class="eyebrow">{{ t("application_links") }}</p>
+    <div class="partner-link-list">
+      {% for item in application_links %}
+      <a class="text-link" href="{{ item.url }}" target="_blank" rel="noopener">{{ item.comment or item.url }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</section>
+
 <nav class="tabs" data-tabs>
   {% for name in partner_tabs %}
   <button type="button" class="{{ 'active' if name == active_tab else '' }}" data-tab="{{ name }}">{{ t("tab_" + name) }}</button>
@@ -109,6 +127,15 @@
     {% set applications = application_links %}
     {% include "_application_rows.html" %}
     <small>{{ t("application_links_hint") }}</small>
+  </div>
+
+  <div class="form-section">
+    <h2>{{ t("comment") }}</h2>
+    <div class="field">
+      <label for="internal_comment">{{ t("comment") }}</label>
+      <textarea id="internal_comment" name="internal_comment" rows="4" placeholder="{{ t('internal_comment_hint') }}">{{ partner.internal_comment or "" }}</textarea>
+      <small>{{ t("internal_comment_hint") }}</small>
+    </div>
   </div>
 
   <div class="form-actions">

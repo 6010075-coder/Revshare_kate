@@ -316,6 +316,7 @@ class Store:
                     email TEXT NOT NULL DEFAULT '',
                     telegram TEXT NOT NULL DEFAULT '',
                     report_channel TEXT NOT NULL DEFAULT 'email',
+                    internal_comment TEXT NOT NULL DEFAULT '',
                     token TEXT NOT NULL UNIQUE,
                     rate REAL,
                     currency TEXT NOT NULL DEFAULT 'USD',
@@ -527,6 +528,10 @@ class Store:
             if "category" not in partner_columns:
                 db.execute(
                     "ALTER TABLE partners ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+                )
+            if "internal_comment" not in partner_columns:
+                db.execute(
+                    "ALTER TABLE partners ADD COLUMN internal_comment TEXT NOT NULL DEFAULT ''"
                 )
             legacy_application_categories = db.execute(
                 """
@@ -978,6 +983,7 @@ class Store:
         currency: str,
         notice_settings: dict | None = None,
         category: str = "",
+        internal_comment: str = "",
     ) -> int:
         settings = json.dumps(
             normalize_notice_settings(
@@ -991,8 +997,8 @@ class Store:
                 INSERT INTO partners
                 (name, legal_name, legal_country, altegio_legal_entity,
                 contact_name, email, telegram, report_channel, token, rate,
-                currency, notifications, category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                currency, notifications, category, internal_comment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -1008,6 +1014,7 @@ class Store:
                     currency,
                     settings,
                     category,
+                    internal_comment,
                 ),
             )
         return int(cursor.lastrowid)
@@ -1027,6 +1034,7 @@ class Store:
         currency: str,
         notice_settings: dict | None = None,
         category: str = "",
+        internal_comment: str = "",
     ) -> None:
         assignments = """
                     name = ?,
@@ -1039,7 +1047,8 @@ class Store:
                     report_channel = ?,
                     rate = ?,
                     currency = ?,
-                    category = ?
+                    category = ?,
+                    internal_comment = ?
         """
         values: list[object] = [
             name,
@@ -1053,6 +1062,7 @@ class Store:
             rate,
             currency,
             category,
+            internal_comment,
         ]
         if notice_settings is not None:
             assignments += ",\n                    notifications = ?"
