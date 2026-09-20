@@ -432,8 +432,7 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert 'data-panel="summary"' in refreshed.text
     assert 'data-panel="differences"' in refreshed.text
     assert "Summary" in refreshed.text
-    assert "Your file" in refreshed.text
-    assert "Result" in refreshed.text
+    assert "Check result" in refreshed.text
     assert "Salons in your file" in refreshed.text
     assert "120.0" in refreshed.text
     assert "999999" not in refreshed.text
@@ -498,9 +497,8 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         )
     assert "Location ID 102" in preview.text
     assert "Why are these salons missing?" in preview.text
-    assert "Your file" in preview.text
-    assert "Result" in preview.text
-    assert "In the file: 1 · active in Altegio: 2" in preview.text
+    assert "Check result" in preview.text
+    assert "Salons: 1 · active in Altegio: 2" in preview.text
     assert 'data-open-tab="differences"' in preview.text
     assert 'class="card review-form tab-panel active" data-panel="summary"' in preview.text
     assert "Explain the difference" in preview.text

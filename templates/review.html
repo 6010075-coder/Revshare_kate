@@ -33,31 +33,7 @@
       {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
       {% set counts_match = snapshot_ready and reported_count == active_count %}
 
-      <section class="review-source review-source-check">
-        <header class="review-source-head">
-          <p class="eyebrow">{{ t("review_our_check") }}</p>
-          <h2>{{ t("review_our_check_title") }}</h2>
-        </header>
-        {% if not snapshot_ready %}
-        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
-        {% else %}
-        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
-          <div>
-            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
-            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
-          </div>
-          {% if not counts_match and required_discrepancies %}
-          <button class="button secondary" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
-          {% endif %}
-        </div>
-        {% endif %}
-      </section>
-
       <section class="review-source review-source-file">
-        <header class="review-source-head">
-          <p class="eyebrow">{{ t("review_from_your_report") }}</p>
-          <h2>{{ t("review_from_your_report_title") }}</h2>
-        </header>
         <div class="review-summary-metrics">
           <div class="review-summary-metric">
             <strong>{{ reported_count }}</strong>
@@ -93,6 +69,25 @@
           <p class="hint">{{ t("ids_not_in_file") }}</p>
           {% endif %}
         </details>
+      </section>
+
+      <section class="review-source review-source-check">
+        <header class="review-source-head">
+          <h2>{{ t("review_our_check_title") }}</h2>
+        </header>
+        {% if not snapshot_ready %}
+        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
+        {% else %}
+        <div class="review-result {{ 'is-match' if counts_match else 'is-mismatch' }}">
+          <div>
+            <strong>{{ t("review_result_match") if counts_match else t("review_result_mismatch") }}</strong>
+            <span>{{ t("review_result_details", reported=reported_count, active=active_count) }}</span>
+          </div>
+          {% if not counts_match and required_discrepancies %}
+          <button class="button secondary" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
+          {% endif %}
+        </div>
+        {% endif %}
       </section>
 
       {% if application_breakdown|length > 1 %}
