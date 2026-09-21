@@ -203,8 +203,8 @@ def application_registry_check(
         if usage is None:
             continue
         comparable = True
-        connected, active = usage
-        expected.update((application_id, location_id) for location_id in connected | active)
+        _connected, active = usage
+        expected.update((application_id, location_id) for location_id in active)
         reported.update(
             (application_id, str(location_id))
             for location_id in item.get("location_ids") or []
@@ -884,6 +884,7 @@ def create_app(
         if not partner:
             raise HTTPException(404, "Ссылка партнёра не найдена")
         selected = valid_period(period) or current_period()
+        _connected, active = app.state.store.usage(partner["id"], selected)
         stream = io.StringIO()
         stream.write("\ufeff")
         writer = csv.writer(stream)
@@ -900,19 +901,28 @@ def create_app(
         )
         links = app.state.store.application_links(partner["id"])
         for link in links:
-            writer.writerow(
-                [
-                    parse_application_id(link.get("url", "")) or "",
-                    link.get("comment", "") or link.get("url", ""),
-                    "",
-                    "",
-                    partner["currency"],
-                    "",
-                    "",
-                ]
+            app_id = parse_application_id(link.get("url", ""))
+            usage = (
+                app.state.store.application_usage(partner["id"], selected, app_id)
+                if isinstance(app_id, int)
+                else None
             )
+            app_active = usage[1] if usage is not None else active
+            for location_id in sorted(app_active):
+                writer.writerow(
+                    [
+                        app_id or "",
+                        link.get("comment", "") or link.get("url", ""),
+                        location_id,
+                        "",
+                        partner["currency"],
+                        "",
+                        "",
+                    ]
+                )
         if not links:
-            writer.writerow(["", "", "", "", partner["currency"], "", ""])
+            for location_id in sorted(active):
+                writer.writerow(["", "", location_id, "", partner["currency"], "", ""])
         return StreamingResponse(
             iter([stream.getvalue()]),
             media_type="text/csv; charset=utf-8",
@@ -1032,8 +1042,8 @@ def create_app(
                 draft = app.state.store.report_draft(draft_token, partner["id"])
         connected, active = app.state.store.usage(partner["id"], draft["period"])
         check = assess(draft["location_ids"], connected, active)
-        reference_ids = connected | active
-        legacy_discrepancies = discrepancy_items(draft["location_ids"], connected, active)
+        reference_ids = active
+        legacy_discrepancies = discrepancy_items(draft["location_ids"], active, active)
         payment_ids = {
             location_id
             for location_id, facts in app.state.store.usage_evidence(
@@ -1178,7 +1188,7 @@ def create_app(
             location_id for location_id, facts in evidence.items() if facts["had_payment"]
         }
         reported = set(draft["location_ids"])
-        all_ids = sorted(connected | active | reported)
+        all_ids = sorted(active | reported)
         details = app.state.store.usage_location_details(partner["id"], draft["period"])
         existing_reasons: dict[str, str] = {}
         existing_details: dict[str, str] = {}
@@ -1209,8 +1219,8 @@ def create_app(
             app_reference = set(item.get("location_ids") or [])
             app_all_ids = app_reference
             if usage is not None:
-                app_connected, app_active = usage
-                app_all_ids |= app_connected | app_active
+                _app_connected, app_active = usage
+                app_all_ids |= app_active
             if not app_all_ids:
                 app_all_ids = set(all_ids)
             application_rows.extend(
@@ -1414,8 +1424,8 @@ def create_app(
         payment_ids = {
             location_id for location_id, facts in evidence.items() if facts["had_payment"]
         }
-        reference_ids = connected | active
-        legacy_discrepancies = discrepancy_items(ids, connected, active)
+        reference_ids = active
+        legacy_discrepancies = discrepancy_items(ids, active, active)
         report_has_status_fields = "payment_status_column" in getattr(parsed, "notes", []) if path.exists() else False
         application_breakdown = application_breakdown_with_usage(
             partner["id"], draft["period"], draft.get("application_breakdown", [])

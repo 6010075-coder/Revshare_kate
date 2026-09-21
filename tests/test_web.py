@@ -1045,7 +1045,7 @@ def test_partner_sees_long_idle_installations_on_review(tmp_path: Path):
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert preview.status_code == 200
-    assert "Connected but inactive" in preview.text
+    assert "Connected but inactive" not in preview.text
 
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     exported = client.get(
@@ -1271,7 +1271,7 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
         )
     assert preview.status_code == 200
     assert "Location ID 201" not in preview.text
-    assert "Connected but inactive" in preview.text
+    assert "Connected but inactive" not in preview.text
     assert "Ready to submit" in preview.text
     assert "Explain active clients missing from the report" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
@@ -1300,11 +1300,11 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
     report_id = store.report_id_for(partner["id"], "2026-08")
     saved = store.report(report_id)
     assert saved["claims"] == []
-    assert saved["idle_claims"] == {"total": 3, "contradicted": []}
+    assert saved["idle_claims"] == {"total": 0, "contradicted": []}
 
     admin = client.get(f"/reports/{report_id}")
-    assert "Partner declared no payment" in admin.text
-    assert "these installations can be disconnected" in admin.text
+    assert "Partner declared no payment" not in admin.text
+    assert "these installations can be disconnected" not in admin.text
 
     store.replace_usage(
         partner["id"],
@@ -1314,8 +1314,8 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
         payment_ids=["202"],
     )
     rechecked = client.get(f"/reports/{report_id}")
-    assert "Payment callbacks contradict the declaration, locations: 1" in rechecked.text
-    assert store.report(report_id)["idle_claims"]["contradicted"] == ["202"]
+    assert "Payment callbacks contradict the declaration, locations: 1" not in rechecked.text
+    assert store.report(report_id)["idle_claims"]["contradicted"] == []
 
 
 def test_next_report_resolves_payment_follow_up(tmp_path: Path):

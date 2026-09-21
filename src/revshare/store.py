@@ -1571,7 +1571,10 @@ class Store:
                 "snapshot_recheck",
                 actor="system",
             )
-        items = discrepancy_items(location_ids, connected, active)
+        # A partner report is reconciled against locations that were active
+        # during the reporting month. Connected locations without activity
+        # remain available in the Altegio snapshot, but do not create a claim.
+        items = discrepancy_items(location_ids, active, active)
         existing = {
             (row["location_id"], row["kind"]): row
             for row in db.execute(
