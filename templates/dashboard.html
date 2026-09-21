@@ -104,15 +104,10 @@
         </td>
         <td>
           {% if item.report_id %}
-            <span class="status {{ item.risk_level }}">
-              {% if item.workflow_status == "posted" %}
-                {{ t("workflow_posted") }}
-              {% elif item.workflow_status == "approved" %}
-                {{ t("workflow_approved") }}
-              {% else %}
-                {{ t("verified") if item.status == "verified" else t("review") }}
-              {% endif %}
+            <span class="status {{ 'green' if item.display_status == 'checked' else 'yellow' if item.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+              {{ t("report_status_" + item.display_status) }}
             </span>
+            {% if item.workflow_status in ['approved', 'posted'] %}<small>{{ t("workflow_" + item.workflow_status) }}</small>{% endif %}
           {% else %}
             <span class="status muted">{{ t("not_submitted") }}</span>
           {% endif %}

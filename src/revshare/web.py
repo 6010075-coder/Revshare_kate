@@ -149,7 +149,7 @@ def partner_registry_issues(
         issues.append(
             {
                 "location_id": location_id,
-                "kind": "connected_not_reported",
+                "kind": "active_not_reported",
                 "required": True,
             }
         )
@@ -352,7 +352,10 @@ def review_active_tab(
     return "summary"
 
 
-DASHBOARD_STATUSES = ("all", "missing", "submitted", "approved", "review", "verified")
+DASHBOARD_STATUSES = (
+    "all", "missing", "submitted", "approved", "review", "verified",
+    "checked", "discrepancies", "manual", "attention",
+)
 DASHBOARD_RISKS = ("all", "green", "yellow", "red")
 STATUS_ORDER = {"requires_review": 0, "verified": 1}
 DASHBOARD_SORTS = {
@@ -498,6 +501,10 @@ def sort_links(base: dict, sort: str, direction: str) -> dict:
 def matches_dashboard_filters(item: dict, filters: dict) -> bool:
     status = filters["status"]
     submitted = item["report_id"] is not None
+    if status in {"checked", "discrepancies", "manual", "attention"} and (
+        not submitted or item.get("display_status") != status
+    ):
+        return False
     if status == "submitted" and not submitted:
         return False
     if status == "missing" and submitted:
@@ -1455,157 +1462,52 @@ def create_app(
                 claim_location, claim_kind, claim_reason, claim_detail
             )
         }
-        no_payment_declared = idle_declaration == "no_payment"
         claims = []
-        invalid_claims = False
+        claim_keys: set[tuple[str, str]] = set()
+
+        def add_claim(item: dict[str, object], reason: str, detail: str = "") -> None:
+            location_id = str(item["location_id"])
+            kind = str(item.get("kind") or "active_not_reported")
+            key = (location_id, kind)
+            if key in claim_keys:
+                return
+            claim_keys.add(key)
+            claims.append(
+                {
+                    **item,
+                    "location_id": location_id,
+                    "kind": kind,
+                    "reason": reason,
+                    "detail": detail,
+                }
+            )
+
         if not report_has_status_fields:
             for item in discrepancies:
-                if no_payment_declared and item["kind"] == "connected_not_active":
-                    claims.append({**item, "reason": "no_payment", "detail": ""})
-                    continue
                 submitted = submitted_claims.get((item["location_id"], item["kind"]))
-                if item["required"] and (
-                    not submitted or submitted["reason"] not in CLAIM_REASON_KEYS
-                ):
-                    invalid_claims = True
-                    continue
-                if submitted and submitted["reason"] == "other" and not submitted["detail"]:
-                    if item["required"]:
-                        invalid_claims = True
-                    continue
                 if submitted and submitted["reason"] in CLAIM_REASON_KEYS:
-                    claims.append({**item, **submitted})
+                    if submitted["reason"] != "other" or submitted["detail"]:
+                        add_claim(item, submitted["reason"], submitted["detail"])
+                    continue
+                if item["required"]:
+                    add_claim(item, "unexplained")
         else:
             for item in discrepancies:
-                if item["kind"] == "connected_not_reported":
-                    invalid_claims = True
-                    continue
-                if item["kind"] == "payment_status_missing":
-                    invalid_claims = True
-                    continue
                 if item["kind"] == "payment_not_found":
-                    claims.append(
-                        {
-                            **item,
-                            "kind": "active_not_reported",
-                            "reason": "unexplained",
-                            "detail": "The file says that payment was received, but no Altegio payment was found.",
-                        }
+                    add_claim(
+                        {**item, "kind": "active_not_reported"},
+                        "unexplained",
+                        "The file says that payment was received, but no Altegio payment was found.",
                     )
-            for location_id in sorted(set(report_all_ids) & reference_ids - payment_ids):
-                reason = file_reasons.get(location_id, "")
-                detail = file_status_details.get(location_id, "") or file_reason_details.get(location_id, "")
-                if not reason or reason not in CLAIM_REASON_KEYS:
-                    invalid_claims = True
-                    continue
-                if reason == "other" and not detail:
-                    invalid_claims = True
-                    continue
-                kind = "active_not_reported" if location_id in active else "connected_not_active"
-                claims.append(
-                    {
-                        "location_id": location_id,
-                        "kind": kind,
-                        "reason": reason,
-                        "detail": detail,
-                    }
-                )
-        if invalid_claims:
-            required = [item for item in discrepancies if item["required"]]
-            missing_registry_count = sum(item["kind"] == "connected_not_reported" for item in required)
-            missing_status_count = sum(
-                item["kind"] in {"payment_status_missing", "payment_not_found"}
-                for item in required
-            )
-            registry_gap_count = (
-                missing_registry_count
-                if report_has_status_fields
-                else sum(item["kind"] == "active_not_reported" for item in required)
-            )
-            invalid_location_details = app.state.store.usage_location_details(
-                partner["id"], draft["period"]
-            )
-            application_breakdown = application_breakdown_with_usage(
-                partner["id"], draft["period"], draft.get("application_breakdown", [])
-            )
-            return TEMPLATES.TemplateResponse(
-                request,
-                "review.html",
-                context(
-                    request,
-                    language_override=partner_page_language(request, partner),
-                    partner=dict(partner),
-                    draft=draft,
-                    check=assess(ids, connected, active),
-                    connected_count=len(connected),
-                    active_count=len(active),
-                    discrepancies=discrepancies,
-                    required_discrepancies=required,
-                    missing_registry_count=missing_registry_count,
-                    missing_status_count=missing_status_count,
-                    registry_gap_count=registry_gap_count,
-                    optional_discrepancies=[
-                        item for item in discrepancies if not item["required"]
-                    ],
-                    application_breakdown=application_breakdown,
-                    long_idle=long_idle,
-                    location_details=invalid_location_details,
-                    report_reasons=file_reasons,
-                    report_reason_details=file_reason_details,
-                    report_payment_statuses=file_statuses,
-                    report_status_details=file_status_details,
-                    report_has_status_fields=report_has_status_fields,
-                    report_all_ids=report_all_ids,
-                    report_count=len(report_all_ids),
-                    registry_count=len(reference_ids),
-                    payment_summary=partner_payment_summary(
-                        set(report_all_ids), active, reference_ids, payment_ids, file_statuses
-                    ),
-                    report_rows=partner_report_rows(
-                        report_all_ids,
-                        set(ids),
-                        connected,
-                        active,
-                        payment_ids,
-                        file_statuses,
-                        file_status_details,
-                        invalid_location_details,
-                        application_names_by_location(application_breakdown),
-                    ),
-                    matched_count=max(
-                        0,
-                        len(set(report_all_ids) & reference_ids)
-                        - sum(item["kind"] == "payment_not_found" for item in required)
-                        - sum(item["kind"] == "payment_status_missing" for item in required),
-                    ),
-                    payment_not_found_count=sum(
-                        item["kind"] == "payment_not_found" for item in required
-                    ),
-                    missing_payment_status_count=sum(
-                        item["kind"] == "payment_status_missing" for item in required
-                    ),
-                    reasons_filled=sum(
-                        1
-                        for location_id in set(report_all_ids) & reference_ids
-                        if location_id not in payment_ids and file_statuses.get(location_id)
-                    ),
-                    reasons_total=sum(
-                        1
-                        for location_id in set(report_all_ids) & reference_ids
-                        if location_id not in payment_ids
-                    ),
-                    idle_months_threshold=app.state.store.idle_months_threshold(),
-                    form_error="explanations_required",
-                    comment=comment,
-                    idle_declaration=idle_declaration,
-                    active_tab=review_active_tab(
-                        request,
-                        required_count=len(required),
-                        form_error="explanations_required",
-                    ),
-                ),
-                status_code=422,
-            )
+                elif item["kind"] in {"active_not_reported", "payment_status_missing"}:
+                    location_id = str(item["location_id"])
+                    reason = file_reasons.get(location_id, "")
+                    detail = file_status_details.get(location_id, "") or file_reason_details.get(location_id, "")
+                    normalized = {**item, "kind": "active_not_reported"}
+                    if reason in CLAIM_REASON_KEYS and (reason != "other" or detail):
+                        add_claim(normalized, reason, detail)
+                    else:
+                        add_claim(normalized, "unexplained")
         report_id, review = app.state.store.submit_report(
             partner_id=partner["id"],
             period=draft["period"],
@@ -1631,6 +1533,7 @@ def create_app(
                 review=review,
                 file_ids=len(ids),
                 file_source="column" if ids else "not_found",
+                discrepancy_count=len([item for item in discrepancies if item["required"]]),
             ),
         )
 
@@ -1928,6 +1831,69 @@ def create_app(
                 saved=saved == "1",
             ),
         )
+
+    @app.get("/admin/partners/{partner_id}/report", response_class=HTMLResponse)
+    def manual_report_page(
+        request: Request, partner_id: int, period: str = ""
+    ):
+        partner = app.state.store.partner(partner_id)
+        if not partner or not partner["active"]:
+            raise HTTPException(404, "Partner not found")
+        return TEMPLATES.TemplateResponse(
+            request,
+            "manual_report.html",
+            context(
+                request,
+                partner=dict(partner),
+                period=valid_period(period) or current_period(),
+                currency=partner["currency"] or "USD",
+                currencies=SUPPORTED_CURRENCIES,
+            ),
+        )
+
+    @app.post("/admin/partners/{partner_id}/report")
+    def create_manual_report(
+        partner_id: int,
+        period: str = Form(""),
+        turnover: str = Form(""),
+        currency: str = Form("USD"),
+        reported_share: str = Form(""),
+        source_note: str = Form(""),
+        comment: str = Form(""),
+    ):
+        partner = app.state.store.partner(partner_id)
+        if not partner or not partner["active"]:
+            raise HTTPException(404, "Partner not found")
+        selected_period = valid_period(period)
+        if not selected_period:
+            raise HTTPException(422, "Invalid reporting period")
+        normalized_currency = currency.upper().strip()
+        if normalized_currency not in SUPPORTED_CURRENCIES:
+            raise HTTPException(422, "Unsupported currency")
+        try:
+            turnover_value = float(turnover.replace(",", "."))
+            share_value = (
+                float(reported_share.replace(",", "."))
+                if reported_share.strip()
+                else None
+            )
+        except ValueError as error:
+            raise HTTPException(422, "Amounts must be numbers") from error
+        if turnover_value < 0 or (share_value is not None and share_value < 0):
+            raise HTTPException(422, "Amounts cannot be negative")
+        source = source_note.strip()
+        note = comment.strip()
+        if source:
+            note = f"{source}\n{note}".strip()
+        report_id, _ = app.state.store.submit_manual_report(
+            partner_id=partner_id,
+            period=selected_period,
+            turnover=turnover_value,
+            currency=normalized_currency,
+            reported_share=share_value,
+            comment=note,
+        )
+        return RedirectResponse(f"/reports/{report_id}", status_code=303)
 
     @app.post("/admin/partners/{partner_id}/edit")
     def edit_partner(

@@ -553,13 +553,13 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert ">102<" in preview.text
-    assert "Fix 1 rows" in preview.text
+    assert "Discrepancies: 1" in preview.text
     assert "Missing from your file" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' not in preview.text
     assert 'class="card review-form tab-panel active" data-panel="summary"' not in preview.text
-    assert "Upload the corrected file" in preview.text
+    assert "Submit with discrepancies" in preview.text
     assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(
@@ -573,20 +573,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
     ) in differences.text
     assert "101" not in differences.text
     assert "Download full report" in preview.text
-    assert "Upload filled report" in preview.text
-
-    missing_reason = client.post(
-        f"/submit/demo-partner/confirm/{draft_token}",
-        data={
-            "turnover": "100",
-            "currency": "USD",
-            "reported_share": "30",
-            "location_ids": "101",
-            "comment": "",
-        },
-    )
-    assert missing_reason.status_code == 422
-    assert "Complete the full report" in missing_reason.text
+    assert "recommended for the next report" in preview.text
 
     confirmed = client.post(
         f"/submit/demo-partner/confirm/{draft_token}",
@@ -603,7 +590,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         },
     )
     assert confirmed.status_code == 200
-    assert "Saved for reconciliation with Altegio data" in confirmed.text
+    assert "saved with discrepancies" in confirmed.text
     assert "/100" not in confirmed.text
     report_id = next(
         item["report_id"]
@@ -623,7 +610,37 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
     )
     refreshed_admin = client.get(f"/reports/{report_id}")
     assert "Needs review" in refreshed_admin.text
-    assert "There is API activity but no payment callback." in refreshed_admin.text
+
+
+def test_admin_can_save_manual_report_without_partner_file(tmp_path: Path):
+    app = create_app(tmp_path / "manual.db")
+    client = TestClient(app)
+    store: Store = app.state.store
+    partner = store.partner_by_token("demo-partner")
+
+    form = client.get(f"/admin/partners/{partner['id']}/report?period=2026-08")
+    assert form.status_code == 200
+    assert "Enter report manually" in form.text
+
+    saved = client.post(
+        f"/admin/partners/{partner['id']}/report",
+        data={
+            "period": "2026-08",
+            "currency": "KZT",
+            "turnover": "186060",
+            "reported_share": "37212",
+            "source_note": "Billing cabinet",
+            "comment": "No file from partner",
+        },
+    )
+    assert saved.status_code == 200
+    report_id = next(item["report_id"] for item in store.dashboard("2026-08") if item["report_id"])
+    report = client.get(f"/reports/{report_id}")
+    assert report.status_code == 200
+    assert "Entered manually" in report.text
+    assert "Billing cabinet" in report.text
+    item = next(item for item in store.dashboard("2026-08") if item["report_id"] == report_id)
+    assert item["display_status"] == "manual"
 
 
 def test_dashboard_filters_and_revshare_column(tmp_path: Path):

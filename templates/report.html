@@ -7,9 +7,10 @@
     <p class="eyebrow">{{ report.period }}</p>
     <h1>{{ report.partner_name }}</h1>
     <p>
-      <span class="status {{ 'green' if report.workflow_status in ['approved', 'posted'] else 'yellow' }}">
-        {{ t("workflow_" + report.workflow_status) }}
+      <span class="status {{ 'green' if report.display_status == 'checked' else 'yellow' if report.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+        {{ t("report_status_" + report.display_status) }}
       </span>
+      <small>{{ t("report_source_manual" if report.report_source == "manual" else "report_source_file") }} · {{ t("workflow_" + report.workflow_status) }}</small>
     </p>
   </div>
   <div class="form-actions">
@@ -185,7 +186,11 @@
     {% for version in report.versions %}
     <div class="line-item">
       <span>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</span>
-      <strong>{{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}</strong>
+      <strong>
+        {{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}
+        {% set version_discrepancies = version.missing_active|length + version.unknown_locations|length + version.claims|length %}
+        {% if version_discrepancies %}<small>{{ t("history_discrepancies", count=version_discrepancies) }}</small>{% endif %}
+      </strong>
     </div>
     {% endfor %}
   {% endif %}

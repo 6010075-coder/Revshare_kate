@@ -83,7 +83,7 @@
       </div>
       <div class="review-file-actions">
         <a class="button" href="/submit/{{ partner.token }}/review/{{ draft.token }}/full-report.csv">{{ t("download_full_report") }}</a>
-        <a class="text-link" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_filled_report") }}</a>
+        <small class="hint">{{ t("recommended_template_hint") }}</small>
       </div>
     </section>
     {% elif optional_count %}
@@ -100,7 +100,8 @@
 
     <div class="review-submit-bar">
       {% if draft.reported_share is not none %}<span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>{% endif %}
-      {% if required_count %}<span class="review-submit-hint">{{ t("confirm_submit_blocked") }}</span>
+      {% if required_count %}<span class="review-submit-hint">{{ t("confirm_submit_with_discrepancies_hint") }}</span>
+      <button class="button" type="submit">{{ t("confirm_submit_with_discrepancies") }}</button>
       {% else %}<button class="button" type="submit">{{ t("confirm_submit") }}</button>{% endif %}
     </div>
   </form>

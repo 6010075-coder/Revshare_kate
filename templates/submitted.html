@@ -9,7 +9,13 @@
   <div class="review-box neutral">
     <div>
       <span>{{ t("automatic_check") }}</span>
-      <strong>{{ t("report_will_be_checked") }}</strong>
+      {% if discrepancy_count %}
+      <strong>{{ t("report_status_discrepancies") }}</strong>
+      <p>{{ t("discrepancy_saved") }}</p>
+      {% else %}
+      <strong>{{ t("report_status_checked") }}</strong>
+      <p>{{ t("report_will_be_checked") }}</p>
+      {% endif %}
     </div>
   </div>
   <ul class="reason-list partner-result">

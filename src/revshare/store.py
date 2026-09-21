@@ -279,6 +279,28 @@ def assess(
     )
 
 
+def report_display_status(item: dict) -> str:
+    """Short status for the admin dashboard and report history."""
+    if item.get("report_source") == "manual":
+        return "manual"
+    if item.get("status") == "verified":
+        return "checked"
+    reason_keys = {
+        reason.get("key")
+        for reason in item.get("reasons") or []
+        if isinstance(reason, dict)
+    }
+    if reason_keys & {
+        "reason_no_registry",
+        "reason_duplicates",
+        "reason_missing_active",
+        "reason_unknown",
+        "reason_partner_discrepancies",
+    }:
+        return "discrepancies"
+    return "attention"
+
+
 class Store:
     def __init__(
         self,
@@ -364,6 +386,7 @@ class Store:
                     unknown_locations TEXT NOT NULL,
                     comment TEXT NOT NULL DEFAULT '',
                     attachment TEXT,
+                    report_source TEXT NOT NULL DEFAULT 'partner_file',
                     submitted_at TEXT NOT NULL,
                     application_breakdown TEXT NOT NULL DEFAULT '[]',
                     UNIQUE(partner_id, period)
@@ -418,6 +441,9 @@ class Store:
                     risk_level TEXT NOT NULL,
                     risk_score INTEGER NOT NULL,
                     reasons TEXT NOT NULL,
+                    missing_active TEXT NOT NULL DEFAULT '[]',
+                    unknown_locations TEXT NOT NULL DEFAULT '[]',
+                    claims TEXT NOT NULL DEFAULT '[]',
                     comment TEXT NOT NULL DEFAULT '',
                     attachment TEXT,
                     submitted_at TEXT NOT NULL,
@@ -435,6 +461,10 @@ class Store:
                     ALTER TABLE reports
                     ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'auto_checked'
                     """
+                )
+            if "report_source" not in report_columns:
+                db.execute(
+                    "ALTER TABLE reports ADD COLUMN report_source TEXT NOT NULL DEFAULT 'partner_file'"
                 )
             if "approved_at" not in report_columns:
                 db.execute("ALTER TABLE reports ADD COLUMN approved_at TEXT")
@@ -473,6 +503,18 @@ class Store:
             if "application_breakdown" not in version_columns:
                 db.execute(
                     "ALTER TABLE report_versions ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "missing_active" not in version_columns:
+                db.execute(
+                    "ALTER TABLE report_versions ADD COLUMN missing_active TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "unknown_locations" not in version_columns:
+                db.execute(
+                    "ALTER TABLE report_versions ADD COLUMN unknown_locations TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "claims" not in version_columns:
+                db.execute(
+                    "ALTER TABLE report_versions ADD COLUMN claims TEXT NOT NULL DEFAULT '[]'"
                 )
             application_columns = {
                 row["name"]
@@ -1405,7 +1447,8 @@ class Store:
                 """
                 SELECT id AS report_id, period, turnover, currency, reported_share,
                 contract_rate,
-                client_count, status, risk_level, risk_score, submitted_at
+                client_count, status, risk_level, risk_score, submitted_at,
+                report_source, reasons
                 FROM reports WHERE partner_id = ?
                 ORDER BY period DESC LIMIT ?
                 """,
@@ -1415,6 +1458,8 @@ class Store:
         history = []
         for row in rows:
             item = dict(row)
+            item["reasons"] = json.loads(item["reasons"] or "[]")
+            item["display_status"] = report_display_status(item)
             item["expected_share"] = (
                 round(
                     item["turnover"]
@@ -1474,7 +1519,8 @@ class Store:
     ) -> None:
         report = db.execute(
             """
-            SELECT r.id, r.turnover, r.reported_share, r.workflow_status,
+                   SELECT r.id, r.turnover, r.reported_share, r.workflow_status,
+                          r.report_source,
                    COALESCE(r.contract_rate, p.rate) AS rate
             FROM reports r
             JOIN partners p ON p.id = r.partner_id
@@ -1482,7 +1528,7 @@ class Store:
             """,
             (partner_id, period),
         ).fetchone()
-        if not report:
+        if not report or report["report_source"] == "manual":
             return
         report_id = report["id"]
         location_ids = [
@@ -1812,6 +1858,7 @@ class Store:
         attachment: str | None,
         claims: list[dict[str, str]] | None = None,
         application_breakdown: list[dict[str, object]] | None = None,
+        report_source: str = "partner_file",
     ) -> tuple[int, Review]:
         connected, active = self.usage(partner_id, period)
         with self.connect() as db:
@@ -1826,16 +1873,38 @@ class Store:
                 """,
                 (partner_id, period),
             ).fetchone()
-        review = assess(
-            location_ids,
-            connected,
-            active,
-            turnover=turnover,
-            reported_share=reported_share,
-            contract_rate=partner["rate"] if partner else None,
-            previous_turnover=previous["turnover"] if previous else None,
-            previous_client_count=previous["client_count"] if previous else None,
-        )
+        if report_source == "manual":
+            review = Review(
+                level="green",
+                score=0,
+                reasons=[],
+                connected=len(connected),
+                active=len(active),
+                reported=0,
+                missing_active=[],
+                unknown=[],
+            )
+        else:
+            review = assess(
+                location_ids,
+                connected,
+                active,
+                turnover=turnover,
+                reported_share=reported_share,
+                contract_rate=partner["rate"] if partner else None,
+                previous_turnover=previous["turnover"] if previous else None,
+                previous_client_count=previous["client_count"] if previous else None,
+            )
+        if report_source != "manual" and claims:
+            review.reasons = [
+                reason for reason in review.reasons if reason.get("key") != "reason_clear"
+            ]
+            review.reasons.append(
+                {"key": "reason_partner_discrepancies", "count": len(claims)}
+            )
+            review.score = max(review.score, 1)
+            if review.level == "green":
+                review.level = "yellow"
         status = "requires_review" if review.level != "green" else "verified"
         workflow_status = "needs_review" if review.level != "green" else "auto_checked"
         now = datetime.now(UTC).isoformat()
@@ -1852,7 +1921,7 @@ class Store:
                     UPDATE reports SET turnover = ?, currency = ?, reported_share = ?,
                     contract_rate = ?, client_count = ?, status = ?, risk_level = ?, risk_score = ?,
                     reasons = ?, missing_active = ?, unknown_locations = ?,
-                    comment = ?, attachment = ?, submitted_at = ?,
+                    comment = ?, attachment = ?, report_source = ?, submitted_at = ?,
                     workflow_status = ?, application_breakdown = ?,
                     approved_at = NULL, approved_by = NULL
                     WHERE id = ?
@@ -1871,6 +1940,7 @@ class Store:
                         json.dumps(review.unknown),
                         comment,
                         attachment,
+                        report_source,
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
@@ -1883,9 +1953,9 @@ class Store:
                     INSERT INTO reports
                     (partner_id, period, turnover, currency, reported_share, contract_rate,
                     client_count, status, risk_level, risk_score, reasons,
-                    missing_active, unknown_locations, comment, attachment, submitted_at,
+                    missing_active, unknown_locations, comment, attachment, report_source, submitted_at,
                     workflow_status, application_breakdown)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         partner_id,
@@ -1903,6 +1973,7 @@ class Store:
                         json.dumps(review.unknown),
                         comment,
                         attachment,
+                        report_source,
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
@@ -1957,8 +2028,9 @@ class Store:
                 INSERT INTO report_versions
                 (report_id, version, turnover, currency, reported_share, contract_rate,
                 client_count, status, risk_level, risk_score, reasons,
-                comment, attachment, submitted_at, application_breakdown)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                missing_active, unknown_locations, claims, comment, attachment,
+                submitted_at, application_breakdown)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -1972,6 +2044,9 @@ class Store:
                     review.level,
                     review.score,
                     json.dumps(review.reasons, ensure_ascii=False),
+                    json.dumps(review.missing_active),
+                    json.dumps(review.unknown),
+                    json.dumps(claims or [], ensure_ascii=False),
                     comment,
                     attachment,
                     now,
@@ -2028,13 +2103,37 @@ class Store:
             self._apply_cross_partner_conflicts(db, period)
         return int(report_id), review
 
+    def submit_manual_report(
+        self,
+        partner_id: int,
+        period: str,
+        turnover: float,
+        currency: str,
+        reported_share: float | None,
+        comment: str,
+    ) -> tuple[int, Review]:
+        """Save an operator-entered report without a partner file or registry."""
+        return self.submit_report(
+            partner_id=partner_id,
+            period=period,
+            turnover=turnover,
+            currency=currency,
+            reported_share=reported_share,
+            location_ids=[],
+            comment=comment,
+            attachment=None,
+            claims=[],
+            application_breakdown=[],
+            report_source="manual",
+        )
+
     def dashboard(self, period: str) -> list[dict]:
         with self.connect() as db:
             rows = db.execute(
                 """
                 SELECT p.*, r.id AS report_id, r.turnover, r.currency AS report_currency,
                 r.reported_share, r.contract_rate, r.client_count, r.status, r.risk_level,
-                r.risk_score, r.reasons, r.submitted_at, r.workflow_status
+                r.risk_score, r.reasons, r.submitted_at, r.workflow_status, r.report_source
                 FROM partners p
                 LEFT JOIN reports r ON r.partner_id = p.id AND r.period = ?
                 WHERE p.active = 1 ORDER BY p.name
@@ -2055,6 +2154,11 @@ class Store:
             if item["report_id"] and item["contract_rate"] is not None:
                 item["rate"] = item["contract_rate"]
             item["reasons"] = json.loads(item["reasons"]) if item["reasons"] else []
+            item["display_status"] = (
+                "missing"
+                if not item["report_id"]
+                else report_display_status(item)
+            )
             connected, active = self.usage(item["id"], period)
             item["connected_count"] = len(connected)
             item["active_count"] = len(active)
@@ -2098,6 +2202,7 @@ class Store:
             ).fetchall()
         item = dict(row)
         item["reasons"] = json.loads(item["reasons"])
+        item["display_status"] = report_display_status(item)
         item["missing_active"] = json.loads(item["missing_active"])
         item["unknown_locations"] = json.loads(item["unknown_locations"])
         item["application_breakdown"] = json.loads(
@@ -2140,6 +2245,7 @@ class Store:
                 """
                 SELECT version, turnover, currency, reported_share, contract_rate, client_count,
                        status, risk_level, risk_score, reasons, comment,
+                       missing_active, unknown_locations, claims,
                        attachment, submitted_at, application_breakdown
                 FROM report_versions
                 WHERE report_id = ?
@@ -2151,6 +2257,9 @@ class Store:
             {
                 **dict(version),
                 "reasons": json.loads(version["reasons"]),
+                "missing_active": json.loads(version["missing_active"] or "[]"),
+                "unknown_locations": json.loads(version["unknown_locations"] or "[]"),
+                "claims": json.loads(version["claims"] or "[]"),
                 "application_breakdown": json.loads(
                     version["application_breakdown"] or "[]"
                 ),
