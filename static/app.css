@@ -358,6 +358,28 @@ textarea { resize: vertical; }
 .review-comment { margin: 18px 0 0; }
 .review-comment label { display: block; margin-bottom: 7px; font-weight: 700; }
 .review-comment label span { color: var(--muted); font-size: .75rem; font-weight: 400; }
+.review-page-simple .review-form-shell { display: grid; gap: 14px; }
+.review-page-simple .card { margin: 0; }
+.review-simple-result { padding: 24px; }
+.review-simple-result > p:not(.eyebrow) { max-width: 58ch; margin: 0 0 12px; color: var(--muted); }
+.review-simple-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; color: var(--muted); font-size: .85rem; }
+.review-simple-line strong { color: var(--ink); font: 700 1.08rem Manrope; }
+.review-payment-line { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; }
+.review-simple-data, .review-simple-issues { padding: 20px 22px; }
+.review-simple-data h2, .review-simple-issues h2 { margin: 0 0 12px; }
+.review-simple-data-grid { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; }
+.review-simple-data-grid > div { display: grid; gap: 2px; }
+.review-simple-data-grid span { color: var(--muted); font-size: .78rem; }
+.review-simple-data-grid strong { font: 700 1.1rem Manrope; }
+.simple-id-list { display: grid; gap: 4px; margin-top: 10px; max-height: 300px; overflow: auto; }
+.simple-id-list > div { display: grid; grid-template-columns: minmax(0, 1fr) 100px 150px; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: .8rem; }
+.simple-id-list strong { font-variant-numeric: tabular-nums; }
+.simple-id-list em { color: var(--muted); font-size: .75rem; font-style: normal; text-align: right; }
+.review-simple-issues > p { margin: 0 0 14px; color: var(--muted); font-size: .84rem; }
+.review-simple-extra { padding: 14px 18px; }
+.review-simple-extra summary { cursor: pointer; font-weight: 700; }
+.review-simple-extra p { margin: 10px 0 0; color: var(--muted); font-size: .82rem; }
+.review-submit-hint { margin-right: auto; color: var(--muted); font-size: .8rem; }
 .review-form-shell { margin-top: 8px; }
 .review-form-shell .tabs { margin-bottom: 0; }
 .review-form-shell .tabs .tag { margin-left: 6px; vertical-align: middle; }

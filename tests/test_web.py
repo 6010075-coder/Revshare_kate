@@ -484,7 +484,7 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert 'data-panel="summary"' not in refreshed.text
     assert "Your report" in refreshed.text
     assert "Show all rows (2)" in refreshed.text
-    assert "What needs checking" in refreshed.text
+    assert "Check your report" in refreshed.text
     assert "120 $" in refreshed.text
     assert "999999" not in refreshed.text
     draft = store.report_draft(draft_token, partner["id"])
@@ -547,7 +547,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert ">102<" in preview.text
-    assert "What needs checking" in preview.text
+    assert "Fix 1 rows" in preview.text
     assert "Missing from your file" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
@@ -1272,7 +1272,7 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
     assert preview.status_code == 200
     assert "Location ID 201" not in preview.text
     assert "Connected but inactive" in preview.text
-    assert "What needs checking" in preview.text
+    assert "Ready to submit" in preview.text
     assert "Explain active clients missing from the report" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
 
