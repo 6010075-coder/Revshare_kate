@@ -315,12 +315,18 @@ def test_multi_application_submission_flow(tmp_path: Path):
         ],
     )
     store.replace_usage(
-        partner["id"], "2026-08", connected_ids=["101", "102"], active_ids=["101", "102"]
+        partner["id"],
+        "2026-08",
+        connected_ids=["101", "102", "103"],
+        active_ids=["101", "102"],
     )
     template = client.get("/submit/demo-partner/template.csv?period=2026-08")
     assert template.status_code == 200
     assert b"Application ID,Application,Location ID,Turnover,Currency,Payment status,Comment" in template.content
     assert b"39,Message.help" in template.content
+    assert b",101," in template.content
+    assert b",102," in template.content
+    assert b",103," not in template.content
     assert b"Application URL" not in template.content
     assert b"https://app.alteg.io" not in template.content
     content = (
