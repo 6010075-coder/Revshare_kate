@@ -66,6 +66,9 @@ class ParsedPartnerReport:
     application_breakdown: list[dict[str, object]] = field(default_factory=list)
     report_reasons: dict[str, str] = field(default_factory=dict)
     report_reason_details: dict[str, str] = field(default_factory=dict)
+    all_location_ids: list[str] = field(default_factory=list)
+    report_payment_statuses: dict[str, str] = field(default_factory=dict)
+    report_status_details: dict[str, str] = field(default_factory=dict)
 
 
 def _parse_amount(raw: str) -> float | None:
@@ -507,19 +510,29 @@ def _report_column(rows: list[list[str]], names: tuple[str, ...]) -> tuple[int, 
     return None
 
 
-def _normalise_report_reason(raw: str) -> tuple[str, str]:
+def _normalise_payment_status(raw: str) -> tuple[str, str, str]:
     value = " ".join((raw or "").split()).strip()
     folded = value.casefold()
     if not value:
-        return "", ""
+        return "", "", ""
     aliases = {
+        "paid": "paid",
+        "оплата получена": "paid",
+        "есть оплата": "paid",
+        "payment received": "paid",
         "no_payment": "no_payment",
         "нет оплаты": "no_payment",
         "оплаты нет": "no_payment",
+        "не платит за приложение": "no_payment",
         "none pay for the app": "no_payment",
+        "trial": "trial",
+        "триал": "trial",
+        "тестовый период": "trial",
         "free_trial": "free_trial",
         "бесплатный период": "free_trial",
+        "бесплатный месяц": "free_trial",
         "free period": "free_trial",
+        "free_month": "free_trial",
         "pay_next_month": "pay_next_month",
         "оплата в следующем месяце": "pay_next_month",
         "платит в следующем месяце": "pay_next_month",
@@ -538,37 +551,68 @@ def _normalise_report_reason(raw: str) -> tuple[str, str]:
         "другое": "other",
     }
     if folded in aliases:
-        return aliases[folded], ""
+        status = aliases[folded]
+        reason = {
+            "trial": "free_trial",
+            "free_trial": "free_trial",
+            "pay_next_month": "pay_next_month",
+            "disconnected_before_month": "disconnected_before_month",
+            "connected_after_month": "connected_after_month",
+            "file_error": "file_error",
+            "other": "other",
+            "no_payment": "no_payment",
+        }.get(status, "")
+        return status, reason, ""
     if folded.startswith("другое:") or folded.startswith("other:"):
-        return "other", value.split(":", 1)[1].strip()
+        return "other", "other", value.split(":", 1)[1].strip()
     # A free-text value is treated as “Other” and retained as its detail.
-    return "other", value
+    return "other", "other", value
+
+
+def _normalise_report_reason(raw: str) -> tuple[str, str]:
+    """Backward-compatible reason parser for older files with a Reason column."""
+    _status, reason, detail = _normalise_payment_status(raw)
+    return reason, detail
 
 
 def _report_annotations(
     path: Path, period: str | None
-) -> tuple[set[str] | None, dict[str, str], dict[str, str]]:
+) -> tuple[
+    list[str],
+    set[str] | None,
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+]:
     """Read participation and explanation columns from a completed full report."""
     try:
         rows = _rows_from_file(path, period)
     except Exception:
-        return None, {}, {}
+        return [], None, {}, {}, {}, {}
     location_header = _report_column(rows, ("location id", "location_id", "id филиала", "altegio id"))
     reason_header = _report_column(rows, ("reason", "причина", "почему"))
+    status_header = _report_column(rows, ("payment status", "статус оплаты", "статус платежа", "status"))
+    comment_header = _report_column(rows, ("comment", "комментарий", "details", "подробности"))
     participation_header = _report_column(
         rows,
         ("included in calculation", "included", "participates", "участвует", "в расчёте", "в расчете"),
     )
     if not location_header or not participation_header:
-        return None, {}, {}
+        return [], None, {}, {}, {}, {}
     header_index, location_column = location_header
     participation_row, participation_column = participation_header
     if participation_row != header_index:
-        return None, {}, {}
+        return [], None, {}, {}, {}, {}
     reason_column = reason_header[1] if reason_header and reason_header[0] == header_index else None
+    status_column = status_header[1] if status_header and status_header[0] == header_index else None
+    comment_column = comment_header[1] if comment_header and comment_header[0] == header_index else None
+    all_ids: list[str] = []
     included: set[str] = set()
     reasons: dict[str, str] = {}
     details: dict[str, str] = {}
+    statuses: dict[str, str] = {}
+    status_details: dict[str, str] = {}
     for row in rows[header_index + 1 :]:
         if location_column >= len(row):
             continue
@@ -576,30 +620,43 @@ def _report_annotations(
         if not match or _is_total_line(" ".join(row)):
             continue
         location_id = match.group(1)
+        all_ids.append(location_id)
         participation = row[participation_column].strip().casefold() if participation_column < len(row) else ""
         if participation in {"да", "yes", "y", "1", "true", "включить", "участвует"}:
             included.add(location_id)
-        if reason_column is not None and reason_column < len(row):
-            reason, detail = _normalise_report_reason(row[reason_column])
-            if reason:
-                reasons[location_id] = reason
-                if detail:
-                    details[location_id] = detail
-    return included, reasons, details
+        raw_status = row[status_column] if status_column is not None and status_column < len(row) else ""
+        if not raw_status and reason_column is not None and reason_column < len(row):
+            raw_status = row[reason_column]
+        status, reason, detail = _normalise_payment_status(raw_status)
+        if status:
+            statuses[location_id] = status
+        raw_comment = row[comment_column] if comment_column is not None and comment_column < len(row) else ""
+        if raw_comment.strip():
+            status_details[location_id] = raw_comment.strip()
+        elif detail:
+            status_details[location_id] = detail
+        if reason:
+            reasons[location_id] = reason
+            if detail:
+                details[location_id] = detail
+    return _unique(all_ids), included, reasons, details, statuses, status_details
 
 
 def _apply_report_annotations(
     parsed: ParsedPartnerReport, path: Path, period: str | None
 ) -> ParsedPartnerReport:
-    included, reasons, details = _report_annotations(path, period)
+    all_ids, included, reasons, details, statuses, status_details = _report_annotations(path, period)
     if included is not None:
         parsed.location_ids = [location_id for location_id in parsed.location_ids if location_id in included]
         # Rows without an amount are still valid rows in the full report.
         if not parsed.location_ids:
             parsed.location_ids = sorted(included)
         parsed.notes.append("participation_column")
+    parsed.all_location_ids = all_ids or list(parsed.location_ids)
     parsed.report_reasons = reasons
     parsed.report_reason_details = details
+    parsed.report_payment_statuses = statuses
+    parsed.report_status_details = status_details
     return parsed
 
 

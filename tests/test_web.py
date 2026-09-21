@@ -103,11 +103,11 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
 
     completed = tmp_path / "completed.csv"
     completed.write_text(
-        "Приложение,Location ID,Название салона,Есть в Altegio,Активен в месяце,Участвует в расчёте,Причина,Оборот,Валюта\n"
-        ",101,,Да,Да,Да,,,USD\n"
-        ",102,Demo Salon,Да,Да,Нет,Бесплатный период,,,USD\n"
-        "Итого оборот,,,,,,,,100,USD\n"
-        "Итого revshare,,,,,,,,20,USD\n",
+        "Приложение,Location ID,Название салона,Есть в Altegio,Активен в месяце,Участвует в расчёте,Статус оплаты,Комментарий,Оборот,Валюта\n"
+        ",101,,Да,Да,Да,Нет оплаты,,100,USD\n"
+        ",102,Demo Salon,Да,Да,Нет,Бесплатный месяц,,,USD\n"
+        "Итого оборот,,,,,,,,,100,USD\n"
+        "Итого revshare,,,,,,,,,20,USD\n",
         encoding="utf-8",
     )
     with completed.open("rb") as handle:
@@ -117,8 +117,11 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
             files={"attachment": ("completed.csv", handle, "text/csv")},
         )
     assert reviewed.status_code == 200
-    assert "Reasons read: 1 of 1" in reviewed.text
-    assert "Reason added" in reviewed.text
+    assert "Payment statuses read: 2 of 2" in reviewed.text
+    assert "Free month" in reviewed.text
+    reviewed_token = str(reviewed.url).rstrip("/").split("/")[-1]
+    confirmed = client.post(f"/submit/demo-partner/confirm/{reviewed_token}", data={"comment": ""})
+    assert confirmed.status_code == 200
 
 
 def test_parse_recommended_partner_report_without_cached_formulas(tmp_path: Path):
@@ -315,7 +318,8 @@ def test_multi_application_submission_flow(tmp_path: Path):
     )
     template = client.get("/submit/demo-partner/template.csv?period=2026-08")
     assert template.status_code == 200
-    assert b"Application,Location ID,Turnover,Currency" in template.content
+    assert b"Application,Location ID,Turnover,Currency" not in template.content
+    assert b"Application,Location ID,Salon name,In Altegio,Active in month,Included in calculation,Payment status,Comment,Turnover,Currency" in template.content
     assert b"Application URL" not in template.content
     assert b"https://app.alteg.io" not in template.content
     content = (
@@ -544,7 +548,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         )
     assert "Location ID 102" in preview.text
     assert "Check the discrepancies" in preview.text
-    assert "Active salons missing from report: 1" in preview.text
+    assert "Connected salons missing from report: 1" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' in preview.text
@@ -576,7 +580,7 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         },
     )
     assert missing_reason.status_code == 422
-    assert "Select a valid reason for every active Location ID" in missing_reason.text
+    assert "Complete the full report" in missing_reason.text
 
     confirmed = client.post(
         f"/submit/demo-partner/confirm/{draft_token}",

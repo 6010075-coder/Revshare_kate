@@ -30,9 +30,9 @@
     </nav>
 
     <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
-      {% set reported_count = draft.location_ids|length %}
+      {% set reported_count = report_count %}
       {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
-      {% set counts_match = reported_count == active_count %}
+      {% set counts_match = reported_count == registry_count %}
       {% set reconciliation_ok = snapshot_ready and not discrepancies %}
 
       <section class="review-source review-source-file">
@@ -64,10 +64,10 @@
         </div>
         <details class="ids-details">
           <summary>{{ t("reported_locations_details", count=reported_count) }}</summary>
-          {% if draft.location_ids %}
+          {% if report_all_ids %}
           <div class="location-id-table">
             <div class="location-id-heading">{{ t("location_id_label") }}</div>
-            {% for location_id in draft.location_ids %}
+            {% for location_id in report_all_ids %}
             <div>{{ location_id }}</div>
             {% endfor %}
           </div>
@@ -86,8 +86,10 @@
             <strong>
               {% if reconciliation_ok %}
               {{ t("review_result_match") }}
-              {% elif required_count %}
-              {{ t("review_required_count", count=required_count) }}
+              {% elif registry_gap_count %}
+              {{ t("review_required_count", count=registry_gap_count) }}
+              {% elif missing_status_count %}
+              {{ t("payment_status_required_count", count=missing_status_count) }}
               {% else %}
               {{ t("review_questions_count", count=optional_count) }}
               {% endif %}
@@ -99,29 +101,61 @@
               <strong>{{ reported_count }}</strong>
               <span>{{ t("review_reported_label") }}</span>
               <b>{{ "=" if counts_match else "≠" }}</b>
-              <strong>{{ active_count }}</strong>
-              <span>{{ t("review_active_label") }}</span>
+              <strong>{{ registry_count }}</strong>
+              <span>{{ t("review_connected_label") }}</span>
             </div>
-            {% if required_count %}
+            {% if registry_gap_count %}
             <div class="review-difference-preview">
               <span>{{ t("review_missing_locations") }}</span>
               <ul>
-                {% for item in required_discrepancies[:6] %}
+                {% for item in required_discrepancies if item.kind in ['connected_not_reported', 'active_not_reported'] %}
+                {% if loop.index <= 6 %}
                 <li>
                   {% if location_details and location_details.get(item.location_id, {}).get('location_name') %}
                   {{ location_details[item.location_id].location_name }} ·
                   {% endif %}
                   Location ID {{ item.location_id }}
                 </li>
+                {% endif %}
                 {% endfor %}
-                {% if required_count > 6 %}
-                <li>{{ t("review_more_locations", count=required_count - 6) }}</li>
+                {% if registry_gap_count > 6 %}
+                <li>{{ t("review_more_locations", count=registry_gap_count - 6) }}</li>
                 {% endif %}
               </ul>
             </div>
             {% endif %}
           </div>
         </div>
+        {% endif %}
+      </section>
+
+      <section class="review-source payment-summary">
+        <header class="review-source-head">
+          <h2>{{ t("payment_summary_title") }}</h2>
+          <p>{{ t("payment_summary_hint") }}</p>
+          {% if reasons_total %}<p class="review-progress-inline">{{ t("payment_statuses_read", filled=reasons_filled, total=reasons_total) }}</p>{% endif %}
+        </header>
+        <div class="payment-summary-grid">
+          {% for item in payment_summary if item.count %}
+          <div class="payment-summary-row">
+            <span>{{ t("payment_summary_" ~ item.key) }}</span>
+            <strong>{{ item.count }}</strong>
+          </div>
+          {% endfor %}
+        </div>
+        {% if report_rows %}
+        <details class="status-register">
+          <summary>{{ t("show_payment_statuses", count=report_rows|length) }}</summary>
+          <div class="status-register-table">
+            <div class="status-register-heading"><span>{{ t("location_id_label") }}</span><span>{{ t("payment_status_label") }}</span></div>
+            {% for row in report_rows %}
+            <div>
+              <span><strong>{{ row.location_id }}</strong>{% if row.name %} · {{ row.name }}{% endif %}</span>
+              <span class="status-chip {{ 'is-match' if row.payment and row.status == 'paid' else 'is-mismatch' if not row.status else '' }}">{{ t("payment_status_" ~ row.status) if row.status else t("payment_status_missing") }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </details>
         {% endif %}
       </section>
 
@@ -173,7 +207,7 @@
         {% if draft.reported_share is not none %}
         <span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>
         {% endif %}
-        {% if reasons_filled < reasons_total %}
+        {% if registry_gap_count or missing_status_count %}
           <button class="button" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
         {% else %}
         <button class="button" type="submit">{{ t("confirm_submit") }}</button>
@@ -188,20 +222,20 @@
           <h2>{{ t("difference_title") }}</h2>
           <p>{{ t("difference_intro", count=required_count) }}</p>
           <div class="review-progress">
-            <strong>{{ t("reasons_read", filled=reasons_filled, total=reasons_total) }}</strong>
+            <strong>{{ t("payment_statuses_read", filled=reasons_filled, total=reasons_total) }}</strong>
           </div>
           <div class="form-actions review-file-actions">
             <a class="button" href="/submit/{{ partner.token }}/review/{{ draft.token }}/full-report.csv">{{ t("download_full_report") }}</a>
             <a class="text-link" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_filled_report") }}</a>
           </div>
           <p class="hint">{{ t("full_report_hint") }}</p>
-          <p class="hint">{{ t("review_reason_options") }}</p>
+          <p class="hint">{{ t("review_status_options") }}</p>
         </section>
 
         {% if required_discrepancies %}
         <section class="review-file-check">
-          <h2>{{ t("file_reason_check") }}</h2>
-          <p class="hint">{{ t("file_reason_check_hint") }}</p>
+          <h2>{{ t("file_status_check") }}</h2>
+          <p class="hint">{{ t("file_status_check_hint") }}</p>
           <div class="review-salon-list">
             {% for item in required_discrepancies %}
             <div class="review-salon-row">
@@ -211,10 +245,10 @@
                 <span>{{ location_details[item.location_id].location_name }}</span>
                 {% endif %}
               </div>
-              {% if report_reasons.get(item.location_id) %}
-              <span class="status-chip is-match">{{ t("reason_read") }}</span>
+              {% if report_payment_statuses.get(item.location_id) %}
+              <span class="status-chip is-match">{{ t("status_read") }}</span>
               {% else %}
-              <span class="status-chip is-mismatch">{{ t("reason_missing") }}</span>
+              <span class="status-chip is-mismatch">{{ t("status_missing") }}</span>
               {% endif %}
             </div>
             {% endfor %}

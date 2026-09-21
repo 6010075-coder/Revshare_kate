@@ -124,6 +124,120 @@ def review_reason_summary(
     return filled, total
 
 
+PAYMENT_STATUS_LABELS = {
+    "paid": "Оплата получена",
+    "trial": "Триал",
+    "free_trial": "Бесплатный месяц",
+    "pay_next_month": "Оплата в следующем месяце",
+    "disconnected_before_month": "Салон закрыт или приложение отключено",
+    "connected_after_month": "Подключён после отчётного месяца",
+    "no_payment": "Не платит за приложение",
+    "file_error": "Ошибка в отчёте",
+    "other": "Другое",
+}
+
+
+def partner_registry_issues(
+    report_ids: set[str],
+    reference_ids: set[str],
+    payment_ids: set[str],
+    statuses: dict[str, str],
+) -> list[dict[str, object]]:
+    """Return file completeness and payment-status issues for a partner register."""
+    issues: list[dict[str, object]] = []
+    for location_id in sorted(reference_ids - report_ids):
+        issues.append(
+            {
+                "location_id": location_id,
+                "kind": "connected_not_reported",
+                "required": True,
+            }
+        )
+    for location_id in sorted((report_ids & reference_ids) - payment_ids):
+        status = statuses.get(location_id, "")
+        if not status:
+            issues.append(
+                {
+                    "location_id": location_id,
+                    "kind": "payment_status_missing",
+                    "required": True,
+                }
+            )
+        elif status == "paid":
+            issues.append(
+                {
+                    "location_id": location_id,
+                    "kind": "payment_not_found",
+                    "required": True,
+                }
+            )
+    for location_id in sorted(report_ids - reference_ids):
+        issues.append(
+            {
+                "location_id": location_id,
+                "kind": "reported_not_connected",
+                "required": False,
+            }
+        )
+    return issues
+
+
+def partner_payment_summary(
+    report_ids: set[str],
+    active_ids: set[str],
+    reference_ids: set[str],
+    payment_ids: set[str],
+    statuses: dict[str, str],
+) -> list[dict[str, object]]:
+    no_payment = (report_ids & reference_ids) - payment_ids
+    return [
+        {"key": "active_paid", "count": len(report_ids & active_ids & payment_ids)},
+        {"key": "active_no_payment", "count": len(report_ids & active_ids - payment_ids)},
+        {
+            "key": "inactive_paid",
+            "count": len(report_ids & (reference_ids - active_ids) & payment_ids),
+        },
+        {
+            "key": "inactive_no_payment",
+            "count": len(report_ids & (reference_ids - active_ids) - payment_ids),
+        },
+    ] + [
+        {"key": f"status_{status}", "count": sum(1 for location_id in no_payment if statuses.get(location_id) == status)}
+        for status in sorted(set(statuses.values()) - {"paid"})
+        if any(statuses.get(location_id) == status for location_id in no_payment)
+    ]
+
+
+def partner_report_rows(
+    report_ids: list[str],
+    included_ids: set[str],
+    connected_ids: set[str],
+    active_ids: set[str],
+    payment_ids: set[str],
+    statuses: dict[str, str],
+    status_details: dict[str, str],
+    location_details: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    rows = []
+    for location_id in report_ids:
+        status = statuses.get(location_id, "")
+        if not status and location_id in payment_ids:
+            status = "paid"
+        rows.append(
+            {
+                "location_id": location_id,
+                "name": location_details.get(location_id, {}).get("location_name") or "",
+                "included": location_id in included_ids,
+                "connected": location_id in connected_ids,
+                "active": location_id in active_ids,
+                "payment": location_id in payment_ids,
+                "status": status,
+                "detail": status_details.get(location_id, ""),
+            }
+        )
+    return rows
+
+
 def review_active_tab(
     request: Request,
     *,
@@ -673,12 +787,27 @@ def create_app(
         stream = io.StringIO()
         stream.write("\ufeff")
         writer = csv.writer(stream)
-        writer.writerow(["Application", "Location ID", "Turnover", "Currency"])
+        writer.writerow(
+            [
+                "Application",
+                "Location ID",
+                "Salon name",
+                "In Altegio",
+                "Active in month",
+                "Included in calculation",
+                "Payment status",
+                "Comment",
+                "Turnover",
+                "Currency",
+            ]
+        )
         links = app.state.store.application_links(partner["id"])
         for link in links:
-            writer.writerow([link.get("comment", ""), "", "", partner["currency"]])
+            writer.writerow(
+                [link.get("comment", ""), "", "", "", "", "", "", "", "", partner["currency"]]
+            )
         if not links:
-            writer.writerow(["", "", "", partner["currency"]])
+            writer.writerow(["", "", "", "", "", "", "", "", "", partner["currency"]])
         return StreamingResponse(
             iter([stream.getvalue()]),
             media_type="text/csv; charset=utf-8",
@@ -759,6 +888,10 @@ def create_app(
         path = UPLOADS / draft["attachment"]
         report_reasons: dict[str, str] = {}
         report_reason_details: dict[str, str] = {}
+        report_payment_statuses: dict[str, str] = {}
+        report_status_details: dict[str, str] = {}
+        report_all_ids = list(draft["location_ids"])
+        report_has_status_fields = False
         if path.exists():
             parsed = parse_partner_report(
                 path,
@@ -771,6 +904,10 @@ def create_app(
             )
             report_reasons = parsed.report_reasons
             report_reason_details = parsed.report_reason_details
+            report_payment_statuses = parsed.report_payment_statuses
+            report_status_details = parsed.report_status_details
+            report_all_ids = parsed.all_location_ids or list(parsed.location_ids)
+            report_has_status_fields = "participation_column" in parsed.notes
             if (
                 parsed.location_ids != draft["location_ids"]
                 or parsed.turnover != draft["turnover"]
@@ -790,18 +927,62 @@ def create_app(
                 draft = app.state.store.report_draft(draft_token, partner["id"])
         connected, active = app.state.store.usage(partner["id"], draft["period"])
         check = assess(draft["location_ids"], connected, active)
-        discrepancies = discrepancy_items(draft["location_ids"], connected, active)
+        reference_ids = connected | active
+        legacy_discrepancies = discrepancy_items(draft["location_ids"], connected, active)
+        payment_ids = {
+            location_id
+            for location_id, facts in app.state.store.usage_evidence(
+                partner["id"], draft["period"]
+            ).items()
+            if facts["had_payment"]
+        }
+        discrepancies = (
+            partner_registry_issues(
+                set(report_all_ids), reference_ids, payment_ids, report_payment_statuses
+            )
+            if report_has_status_fields
+            else legacy_discrepancies
+        )
         application_breakdown = application_breakdown_with_usage(
             partner["id"], draft["period"], draft.get("application_breakdown", [])
         )
         long_idle = long_idle_locations(
-            app.state.store, partner["id"], draft["period"], discrepancies
+            app.state.store, partner["id"], draft["period"], legacy_discrepancies
         )
         location_details = app.state.store.usage_location_details(
             partner["id"], draft["period"]
         )
         required = [item for item in discrepancies if item["required"]]
-        reasons_filled, reasons_total = review_reason_summary(required, report_reasons)
+        missing_registry_count = sum(item["kind"] == "connected_not_reported" for item in required)
+        missing_status_count = sum(
+            item["kind"] in {"payment_status_missing", "payment_not_found"}
+            for item in required
+        )
+        registry_gap_count = (
+            missing_registry_count
+            if report_has_status_fields
+            else sum(item["kind"] == "active_not_reported" for item in required)
+        )
+        reasons_total = sum(
+            1
+            for location_id in set(report_all_ids) & reference_ids
+            if report_has_status_fields and location_id not in payment_ids
+        )
+        reasons_filled = sum(
+            1
+            for location_id in set(report_all_ids) & reference_ids
+            if report_has_status_fields and location_id not in payment_ids and report_payment_statuses.get(location_id)
+        )
+        report_rows = partner_report_rows(
+            report_all_ids,
+            set(draft["location_ids"]),
+            connected,
+            active,
+            payment_ids,
+            report_payment_statuses,
+            report_status_details,
+            location_details,
+        )
         return TEMPLATES.TemplateResponse(
             request,
             "review.html",
@@ -815,6 +996,9 @@ def create_app(
                 active_count=len(active),
                 discrepancies=discrepancies,
                 required_discrepancies=required,
+                missing_registry_count=missing_registry_count,
+                missing_status_count=missing_status_count,
+                registry_gap_count=registry_gap_count,
                 optional_discrepancies=[
                     item for item in discrepancies if not item["required"]
                 ],
@@ -823,6 +1007,16 @@ def create_app(
                 location_details=location_details,
                 report_reasons=report_reasons,
                 report_reason_details=report_reason_details,
+                report_payment_statuses=report_payment_statuses,
+                report_status_details=report_status_details,
+                report_has_status_fields=report_has_status_fields,
+                report_all_ids=report_all_ids,
+                report_count=len(report_all_ids),
+                registry_count=len(reference_ids),
+                payment_summary=partner_payment_summary(
+                    set(report_all_ids), active, reference_ids, payment_ids, report_payment_statuses
+                ),
+                report_rows=report_rows,
                 reasons_filled=reasons_filled,
                 reasons_total=reasons_total,
                 idle_months_threshold=app.state.store.idle_months_threshold(),
@@ -843,11 +1037,17 @@ def create_app(
         if not draft:
             raise HTTPException(404, "Draft not found")
         connected, active = app.state.store.usage(partner["id"], draft["period"])
+        evidence = app.state.store.usage_evidence(partner["id"], draft["period"])
+        payment_ids = {
+            location_id for location_id, facts in evidence.items() if facts["had_payment"]
+        }
         reported = set(draft["location_ids"])
         all_ids = sorted(connected | active | reported)
         details = app.state.store.usage_location_details(partner["id"], draft["period"])
         existing_reasons: dict[str, str] = {}
         existing_details: dict[str, str] = {}
+        existing_statuses: dict[str, str] = {}
+        existing_status_details: dict[str, str] = {}
         path = UPLOADS / draft["attachment"]
         if path.exists():
             parsed = parse_partner_report(
@@ -858,10 +1058,38 @@ def create_app(
             )
             existing_reasons = parsed.report_reasons
             existing_details = parsed.report_reason_details
+            existing_statuses = parsed.report_payment_statuses
+            existing_status_details = parsed.report_status_details
         application = ""
-        if len(draft.get("application_breakdown", [])) == 1:
-            item = draft["application_breakdown"][0]
+        application_rows: list[tuple[str, str, bool]] = []
+        for item in draft.get("application_breakdown", []):
             application = str(item.get("application_name") or item.get("application_ref") or "")
+            app_id = item.get("application_id")
+            usage = (
+                app.state.store.application_usage(partner["id"], draft["period"], app_id)
+                if isinstance(app_id, int)
+                else None
+            )
+            app_reference = set(item.get("location_ids") or [])
+            app_all_ids = app_reference
+            if usage is not None:
+                app_connected, app_active = usage
+                app_all_ids |= app_connected | app_active
+            if not app_all_ids:
+                app_all_ids = set(all_ids)
+            application_rows.extend(
+                (application, location_id, location_id in app_reference)
+                for location_id in sorted(app_all_ids)
+            )
+        covered_ids = {location_id for _application, location_id, _included in application_rows}
+        application_rows.extend(
+            ("", location_id, location_id in reported)
+            for location_id in all_ids
+            if location_id not in covered_ids
+        )
+        if not application_rows:
+            application_rows = [(application, location_id, location_id in reported) for location_id in all_ids]
+        seen_application_rows: set[tuple[str, str]] = set()
         stream = io.StringIO()
         stream.write("\ufeff")
         writer = csv.writer(stream)
@@ -873,18 +1101,25 @@ def create_app(
                 "Есть в Altegio",
                 "Активен в месяце",
                 "Участвует в расчёте",
-                "Причина",
+                "Статус оплаты",
+                "Комментарий",
                 "Оборот",
                 "Валюта",
             ]
         )
-        for location_id in all_ids:
+        for application, location_id, included in application_rows:
+            row_key = (application, location_id)
+            if row_key in seen_application_rows:
+                continue
+            seen_application_rows.add(row_key)
             detail = details.get(location_id, {})
-            included = location_id in reported
             reason = existing_reasons.get(location_id, "")
             reason_detail = existing_details.get(location_id, "")
-            if reason == "other" and reason_detail:
-                reason = f"Другое: {reason_detail}"
+            status = existing_statuses.get(location_id, "")
+            if not status and location_id in payment_ids:
+                status = "paid"
+            status_label = PAYMENT_STATUS_LABELS.get(status, "")
+            status_detail = existing_status_details.get(location_id, "") or reason_detail
             writer.writerow(
                 [
                     application,
@@ -893,7 +1128,8 @@ def create_app(
                     "Да" if location_id in connected else "Нет",
                     "Да" if location_id in active else "Нет",
                     "Да" if included else "Нет",
-                    reason,
+                    status_label,
+                    status_detail,
                     "",
                     draft["currency"] or partner["currency"],
                 ]
@@ -1024,12 +1260,11 @@ def create_app(
         turnover = draft["turnover"]
         currency = (draft["currency"] or "USD").upper()
         connected, active = app.state.store.usage(partner["id"], draft["period"])
-        discrepancies = discrepancy_items(ids, connected, active)
-        long_idle = long_idle_locations(
-            app.state.store, partner["id"], draft["period"], discrepancies
-        )
+        report_all_ids = list(ids)
         file_reasons: dict[str, str] = {}
         file_reason_details: dict[str, str] = {}
+        file_statuses: dict[str, str] = {}
+        file_status_details: dict[str, str] = {}
         path = UPLOADS / draft["attachment"]
         if path.exists():
             parsed = parse_partner_report(
@@ -1038,8 +1273,28 @@ def create_app(
                 default_currency=partner["currency"],
                 period=draft["period"],
             )
+            report_all_ids = parsed.all_location_ids or list(parsed.location_ids)
             file_reasons = parsed.report_reasons
             file_reason_details = parsed.report_reason_details
+            file_statuses = parsed.report_payment_statuses
+            file_status_details = parsed.report_status_details
+        evidence = app.state.store.usage_evidence(partner["id"], draft["period"])
+        payment_ids = {
+            location_id for location_id, facts in evidence.items() if facts["had_payment"]
+        }
+        reference_ids = connected | active
+        legacy_discrepancies = discrepancy_items(ids, connected, active)
+        report_has_status_fields = "participation_column" in getattr(parsed, "notes", []) if path.exists() else False
+        discrepancies = (
+            partner_registry_issues(
+                set(report_all_ids), reference_ids, payment_ids, file_statuses
+            )
+            if report_has_status_fields
+            else legacy_discrepancies
+        )
+        long_idle = long_idle_locations(
+            app.state.store, partner["id"], draft["period"], legacy_discrepancies
+        )
         submitted_claims = {
             (location, kind): {"reason": reason, "detail": detail.strip()}
             for location, kind, reason, detail in zip(
@@ -1049,27 +1304,73 @@ def create_app(
         no_payment_declared = idle_declaration == "no_payment"
         claims = []
         invalid_claims = False
-        for item in discrepancies:
-            if no_payment_declared and item["kind"] == "connected_not_active":
-                claims.append({**item, "reason": "no_payment", "detail": ""})
-                continue
-            submitted = submitted_claims.get((item["location_id"], item["kind"]))
-            file_reason = file_reasons.get(str(item["location_id"]), "")
-            file_detail = file_reason_details.get(str(item["location_id"]), "")
-            reason = file_reason or (submitted["reason"] if submitted else "")
-            detail = file_detail or (submitted["detail"] if submitted else "")
-            required = bool(item["required"])
-            if required and reason not in CLAIM_REASON_KEYS:
-                invalid_claims = True
-                continue
-            if reason == "other" and not detail:
-                if required:
+        if not report_has_status_fields:
+            for item in discrepancies:
+                if no_payment_declared and item["kind"] == "connected_not_active":
+                    claims.append({**item, "reason": "no_payment", "detail": ""})
+                    continue
+                submitted = submitted_claims.get((item["location_id"], item["kind"]))
+                if item["required"] and (
+                    not submitted or submitted["reason"] not in CLAIM_REASON_KEYS
+                ):
                     invalid_claims = True
-                continue
-            if reason in CLAIM_REASON_KEYS:
-                claims.append({**item, "reason": reason, "detail": detail})
+                    continue
+                if submitted and submitted["reason"] == "other" and not submitted["detail"]:
+                    if item["required"]:
+                        invalid_claims = True
+                    continue
+                if submitted and submitted["reason"] in CLAIM_REASON_KEYS:
+                    claims.append({**item, **submitted})
+        else:
+            for item in discrepancies:
+                if item["kind"] == "connected_not_reported":
+                    invalid_claims = True
+                    continue
+                if item["kind"] == "payment_status_missing":
+                    invalid_claims = True
+                    continue
+                if item["kind"] == "payment_not_found":
+                    claims.append(
+                        {
+                            **item,
+                            "kind": "active_not_reported",
+                            "reason": "unexplained",
+                            "detail": "The file says that payment was received, but no Altegio payment was found.",
+                        }
+                    )
+            for location_id in sorted(set(report_all_ids) & reference_ids - payment_ids):
+                reason = file_reasons.get(location_id, "")
+                detail = file_status_details.get(location_id, "") or file_reason_details.get(location_id, "")
+                if not reason or reason not in CLAIM_REASON_KEYS:
+                    invalid_claims = True
+                    continue
+                if reason == "other" and not detail:
+                    invalid_claims = True
+                    continue
+                kind = "active_not_reported" if location_id in active else "connected_not_active"
+                claims.append(
+                    {
+                        "location_id": location_id,
+                        "kind": kind,
+                        "reason": reason,
+                        "detail": detail,
+                    }
+                )
         if invalid_claims:
             required = [item for item in discrepancies if item["required"]]
+            missing_registry_count = sum(item["kind"] == "connected_not_reported" for item in required)
+            missing_status_count = sum(
+                item["kind"] in {"payment_status_missing", "payment_not_found"}
+                for item in required
+            )
+            registry_gap_count = (
+                missing_registry_count
+                if report_has_status_fields
+                else sum(item["kind"] == "active_not_reported" for item in required)
+            )
+            invalid_location_details = app.state.store.usage_location_details(
+                partner["id"], draft["period"]
+            )
             return TEMPLATES.TemplateResponse(
                 request,
                 "review.html",
@@ -1083,6 +1384,9 @@ def create_app(
                     active_count=len(active),
                     discrepancies=discrepancies,
                     required_discrepancies=required,
+                    missing_registry_count=missing_registry_count,
+                    missing_status_count=missing_status_count,
+                    registry_gap_count=registry_gap_count,
                     optional_discrepancies=[
                         item for item in discrepancies if not item["required"]
                     ],
@@ -1090,13 +1394,38 @@ def create_app(
                         partner["id"], draft["period"], draft.get("application_breakdown", [])
                     ),
                     long_idle=long_idle,
-                    location_details=app.state.store.usage_location_details(
-                        partner["id"], draft["period"]
-                    ),
+                    location_details=invalid_location_details,
                     report_reasons=file_reasons,
                     report_reason_details=file_reason_details,
-                    reasons_filled=review_reason_summary(required, file_reasons)[0],
-                    reasons_total=len(required),
+                    report_payment_statuses=file_statuses,
+                    report_status_details=file_status_details,
+                    report_has_status_fields=report_has_status_fields,
+                    report_all_ids=report_all_ids,
+                    report_count=len(report_all_ids),
+                    registry_count=len(reference_ids),
+                    payment_summary=partner_payment_summary(
+                        set(report_all_ids), active, reference_ids, payment_ids, file_statuses
+                    ),
+                    report_rows=partner_report_rows(
+                        report_all_ids,
+                        set(ids),
+                        connected,
+                        active,
+                        payment_ids,
+                        file_statuses,
+                        file_status_details,
+                        invalid_location_details,
+                    ),
+                    reasons_filled=sum(
+                        1
+                        for location_id in set(report_all_ids) & reference_ids
+                        if location_id not in payment_ids and file_statuses.get(location_id)
+                    ),
+                    reasons_total=sum(
+                        1
+                        for location_id in set(report_all_ids) & reference_ids
+                        if location_id not in payment_ids
+                    ),
                     idle_months_threshold=app.state.store.idle_months_threshold(),
                     form_error="explanations_required",
                     comment=comment,
