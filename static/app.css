@@ -380,6 +380,106 @@ textarea { resize: vertical; }
 .review-simple-extra summary { cursor: pointer; font-weight: 700; }
 .review-simple-extra p { margin: 10px 0 0; color: var(--muted); font-size: .82rem; }
 .review-submit-hint { margin-right: auto; color: var(--muted); font-size: .8rem; }
+
+/* Простая страница сверки: держим содержимое карточек собранным и читаемым. */
+.review-page-simple .review-form-shell {
+  width: 100%;
+  gap: 14px;
+}
+.review-page-simple .review-simple-result,
+.review-page-simple .review-simple-data,
+.review-page-simple .review-simple-issues {
+  padding: 24px 28px;
+}
+.review-page-simple .review-simple-result h2,
+.review-page-simple .review-simple-data h2,
+.review-page-simple .review-simple-issues h2 {
+  margin: 0 0 12px;
+}
+.review-simple-data-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.review-simple-data-grid > div {
+  display: block;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.review-simple-data-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.review-simple-data-grid strong {
+  display: block;
+  font: 700 1.1rem Manrope;
+  line-height: 1.25;
+}
+.simple-id-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  max-height: 300px;
+  overflow: auto;
+}
+.simple-id-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px minmax(130px, .8fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  font-size: .8rem;
+}
+.simple-id-list strong { font-variant-numeric: tabular-nums; }
+.simple-id-list em {
+  color: var(--muted);
+  font-size: .75rem;
+  font-style: normal;
+  text-align: right;
+}
+.review-simple-issues > p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: .84rem;
+}
+.review-simple-issues .problem-list { gap: 8px; }
+.review-simple-issues .problem-row {
+  min-height: 48px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--paper);
+}
+.review-simple-issues .problem-row > div { gap: 3px; }
+.review-simple-issues .problem-row strong { line-height: 1.2; }
+.review-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+}
+.review-file-actions .button { min-width: 230px; }
+.review-page-simple .review-comment { margin: 0; padding: 0 2px; }
+.review-page-simple .review-submit-bar {
+  position: sticky;
+  bottom: 10px;
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.97);
+  box-shadow: 0 8px 24px rgba(34,34,46,.1);
+}
 .review-form-shell { margin-top: 8px; }
 .review-form-shell .tabs { margin-bottom: 0; }
 .review-form-shell .tabs .tag { margin-left: 6px; vertical-align: middle; }
@@ -762,4 +862,14 @@ textarea { resize: vertical; }
   .section-head { align-items: flex-start; }
   .result { margin: 20px 0; padding: 28px 20px; }
   .claim-result { grid-template-columns: 1fr; gap: 10px; }
+}
+
+@media (max-width: 800px) {
+  .review-page-simple .review-simple-result,
+  .review-page-simple .review-simple-data,
+  .review-page-simple .review-simple-issues { padding: 18px; }
+  .review-simple-data-grid { grid-template-columns: 1fr; gap: 8px; }
+  .simple-id-list > div { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; }
+  .simple-id-list em { grid-column: 1 / -1; text-align: left; }
+  .review-page-simple .review-submit-bar { margin: 0; }
 }
