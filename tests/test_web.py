@@ -84,6 +84,7 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
         "2026-08",
         connected_ids=["101", "102"],
         active_ids=["101", "102"],
+        payment_ids=["101"],
         location_details={"102": {"name": "Demo Salon"}},
     )
     original = tmp_path / "original.csv"
@@ -99,15 +100,15 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
     assert full.status_code == 200
     assert "Название салона" in full.text
     assert "Demo Salon" in full.text
-    assert "102,Demo Salon,Да,Да,Нет" in full.text
+    assert ",,102,Demo Salon,,USD" in full.text
 
     completed = tmp_path / "completed.csv"
     completed.write_text(
-        "Приложение,Location ID,Название салона,Есть в Altegio,Активен в месяце,Участвует в расчёте,Статус оплаты,Комментарий,Оборот,Валюта\n"
-        ",101,,Да,Да,Да,Нет оплаты,,100,USD\n"
-        ",102,Demo Salon,Да,Да,Нет,Бесплатный месяц,,,USD\n"
-        "Итого оборот,,,,,,,,,100,USD\n"
-        "Итого revshare,,,,,,,,,20,USD\n",
+        "Application ID,Application,Location ID,Название салона,Оборот,Валюта,Статус оплаты,Комментарий\n"
+        ",AssistBot,101,,100,USD,Оплата получена,\n"
+        ",AssistBot,102,Demo Salon,,USD,Бесплатный месяц,\n"
+        "Итого оборот,,,,100,USD,,\n"
+        "Итого revshare,,,,20,USD,,\n",
         encoding="utf-8",
     )
     with completed.open("rb") as handle:
@@ -117,7 +118,7 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
             files={"attachment": ("completed.csv", handle, "text/csv")},
         )
     assert reviewed.status_code == 200
-    assert "Payment statuses read: 2 of 2" in reviewed.text
+    assert "Show all rows (2)" in reviewed.text
     assert "Free month" in reviewed.text
     reviewed_token = str(reviewed.url).rstrip("/").split("/")[-1]
     confirmed = client.post(f"/submit/demo-partner/confirm/{reviewed_token}", data={"comment": ""})
@@ -318,8 +319,8 @@ def test_multi_application_submission_flow(tmp_path: Path):
     )
     template = client.get("/submit/demo-partner/template.csv?period=2026-08")
     assert template.status_code == 200
-    assert b"Application,Location ID,Turnover,Currency" not in template.content
-    assert b"Application,Location ID,Salon name,In Altegio,Active in month,Included in calculation,Payment status,Comment,Turnover,Currency" in template.content
+    assert b"Application ID,Application,Location ID,Turnover,Currency,Payment status,Comment" in template.content
+    assert b"39,Message.help" in template.content
     assert b"Application URL" not in template.content
     assert b"https://app.alteg.io" not in template.content
     content = (
@@ -480,11 +481,10 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
 
     refreshed = client.get(f"/submit/demo-partner/review/{draft_token}")
     assert refreshed.status_code == 200
-    assert 'data-panel="summary"' in refreshed.text
-    assert 'data-panel="differences"' in refreshed.text
-    assert "Report" in refreshed.text
-    assert "Report data" in refreshed.text
-    assert "Salons</span>" in refreshed.text
+    assert 'data-panel="summary"' not in refreshed.text
+    assert "Your report" in refreshed.text
+    assert "Show all rows (2)" in refreshed.text
+    assert "What needs checking" in refreshed.text
     assert "120 $" in refreshed.text
     assert "999999" not in refreshed.text
     draft = store.report_draft(draft_token, partner["id"])
@@ -546,14 +546,14 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             data={"period": "2026-08"},
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
-    assert "Location ID 102" in preview.text
-    assert "Check the discrepancies" in preview.text
-    assert "Connected salons missing from report: 1" in preview.text
+    assert ">102<" in preview.text
+    assert "What needs checking" in preview.text
+    assert "Missing from your file" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
-    assert 'data-open-tab="differences"' in preview.text
-    assert 'class="card review-form tab-panel active" data-panel="summary"' in preview.text
-    assert "View differences" in preview.text
+    assert 'data-open-tab="differences"' not in preview.text
+    assert 'class="card review-form tab-panel active" data-panel="summary"' not in preview.text
+    assert "Upload the corrected file" in preview.text
     assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(
@@ -1045,7 +1045,7 @@ def test_partner_sees_long_idle_installations_on_review(tmp_path: Path):
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
     assert preview.status_code == 200
-    assert "Connected but inactive: 2" in preview.text
+    assert "Connected but inactive" in preview.text
 
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     exported = client.get(
@@ -1271,8 +1271,8 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
         )
     assert preview.status_code == 200
     assert "Location ID 201" not in preview.text
-    assert "Connected but inactive: 3" in preview.text
-    assert "If these salons should not be included either, add a reason" in preview.text
+    assert "Connected but inactive" in preview.text
+    assert "What needs checking" in preview.text
     assert "Explain active clients missing from the report" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
 

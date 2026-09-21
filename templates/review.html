@@ -2,13 +2,14 @@
 {% block title %}{{ t("review_report") }} · {{ partner.name }}{% endblock %}
 {% block content %}
 <section class="review-page">
-  <div class="section-head">
+  <header class="review-header">
     <div>
+      <p class="eyebrow">{{ t("review_page_eyebrow") }}</p>
       <h1>{{ t("review_report") }}</h1>
       <p>{{ t("review_intro") }}</p>
     </div>
     <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_another") }}</a>
-  </div>
+  </header>
 
   {% if form_error %}
   <div class="notice error">{{ t(form_error) }}</div>
@@ -16,265 +17,154 @@
 
   {% set required_count = required_discrepancies|length %}
   {% set optional_count = optional_discrepancies|length %}
-  {% set difference_count = required_count + optional_count %}
+  {% set attention_count = required_count %}
+  {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
+  {% set reconciliation_ok = snapshot_ready and not required_discrepancies %}
 
   <form method="post" action="/submit/{{ partner.token }}/confirm/{{ draft.token }}" class="review-form-shell">
-    <nav class="tabs" data-tabs>
-      <button type="button" class="{{ 'active' if active_tab == 'summary' else '' }}" data-tab="summary">{{ t("tab_review_summary") }}</button>
-      {% if difference_count %}
-      <button type="button" class="{{ 'active' if active_tab == 'differences' else '' }}" data-tab="differences">
-        {{ t("tab_review_differences") }}
-        <span class="tag">{{ difference_count }}</span>
-      </button>
-      {% endif %}
-    </nav>
-
-    <section class="card review-form tab-panel {{ 'active' if active_tab == 'summary' else '' }}" data-panel="summary">
-      {% set reported_count = report_count %}
-      {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
-      {% set counts_match = reported_count == registry_count %}
-      {% set reconciliation_ok = snapshot_ready and not discrepancies %}
-
-      <section class="review-source review-source-file">
-        <header class="review-source-head">
-          <h2>{{ t("review_from_your_report_title") }}</h2>
-        </header>
-        <div class="review-data-list">
-          <div>
-            <span>{{ t("reported_locations_label") }}</span>
-            <strong>{{ reported_count }}</strong>
-          </div>
-          <div>
-            <span>{{ t("turnover") }}</span>
-            <strong>{{ format_amount(draft.turnover, draft.currency) }}</strong>
-          </div>
-          {% if draft.reported_share is not none %}
-          <div class="is-total">
-            <span>{{ t("share_due_short") }}</span>
-            <strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong>
-          </div>
-          {% endif %}
-          {% if application_breakdown|length == 1 %}
-          {% set report_application = application_breakdown[0] %}
-          <div>
-            <span>{{ t("application_label") }}</span>
-            <strong>{{ report_application.application_name or report_application.application_ref or t("application_not_identified") }}</strong>
-          </div>
-          {% endif %}
+    <section class="card review-card review-overview">
+      <div class="review-overview-top">
+        <div>
+          <p class="eyebrow">{{ t("review_result_label") }}</p>
+          <h2 class="review-result-title {{ 'is-good' if reconciliation_ok else 'is-warning' }}">
+            {% if reconciliation_ok %}{{ t("review_result_match") }}{% else %}{{ t("review_result_attention", count=attention_count) }}{% endif %}
+          </h2>
+          <p class="review-result-copy">
+            {% if reconciliation_ok %}
+            {{ t("review_result_ready_hint") }}
+            {% else %}
+            {{ t("review_result_attention_hint") }}
+            {% endif %}
+          </p>
         </div>
-        <details class="ids-details">
-          <summary>{{ t("reported_locations_details", count=reported_count) }}</summary>
-          {% if report_all_ids %}
-          <div class="location-id-table">
-            <div class="location-id-heading">{{ t("location_id_label") }}</div>
-            {% for location_id in report_all_ids %}
-            <div>{{ location_id }}</div>
-            {% endfor %}
-          </div>
-          {% else %}
-          <p class="hint">{{ t("ids_not_in_file") }}</p>
-          {% endif %}
-        </details>
-      </section>
-
-      <section class="review-source review-source-check">
-        {% if not snapshot_ready %}
-        <div class="notice neutral">{{ t("snapshot_missing") }}</div>
-        {% else %}
-        <div class="review-result {{ 'is-match' if reconciliation_ok else 'is-danger' if required_count else 'is-mismatch' }}">
-          <div class="review-result-status">
-            <strong>
-              {% if reconciliation_ok %}
-              {{ t("review_result_match") }}
-              {% elif registry_gap_count %}
-              {{ t("review_required_count", count=registry_gap_count) }}
-              {% elif missing_status_count %}
-              {{ t("payment_status_required_count", count=missing_status_count) }}
-              {% else %}
-              {{ t("review_questions_count", count=optional_count) }}
-              {% endif %}
-            </strong>
-            {% if required_count and optional_count %}
-            <span class="review-secondary-issue">{{ t("review_questions_count", count=optional_count) }}</span>
-            {% endif %}
-            <div class="review-result-counts">
-              <strong>{{ reported_count }}</strong>
-              <span>{{ t("review_reported_label") }}</span>
-              <b>{{ "=" if counts_match else "≠" }}</b>
-              <strong>{{ registry_count }}</strong>
-              <span>{{ t("review_connected_label") }}</span>
-            </div>
-            {% if registry_gap_count %}
-            <div class="review-difference-preview">
-              <span>{{ t("review_missing_locations") }}</span>
-              <ul>
-                {% for item in required_discrepancies if item.kind in ['connected_not_reported', 'active_not_reported'] %}
-                {% if loop.index <= 6 %}
-                <li>
-                  {% if location_details and location_details.get(item.location_id, {}).get('location_name') %}
-                  {{ location_details[item.location_id].location_name }} ·
-                  {% endif %}
-                  Location ID {{ item.location_id }}
-                </li>
-                {% endif %}
-                {% endfor %}
-                {% if registry_gap_count > 6 %}
-                <li>{{ t("review_more_locations", count=registry_gap_count - 6) }}</li>
-                {% endif %}
-              </ul>
-            </div>
-            {% endif %}
-          </div>
+        {% if draft.reported_share is not none %}
+        <div class="review-due">
+          <span>{{ t("share_due_short") }}</span>
+          <strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong>
         </div>
         {% endif %}
-      </section>
+      </div>
 
-      <section class="review-source payment-summary">
-        <header class="review-source-head">
-          <h2>{{ t("payment_summary_title") }}</h2>
-          <p>{{ t("payment_summary_hint") }}</p>
-          {% if reasons_total %}<p class="review-progress-inline">{{ t("payment_statuses_read", filled=reasons_filled, total=reasons_total) }}</p>{% endif %}
-        </header>
+      <div class="review-metrics">
+        <div><strong>{{ report_count }}</strong><span>{{ t("review_metric_file") }}</span></div>
+        <div><strong>{{ matched_count }}</strong><span>{{ t("review_metric_matched") }}</span></div>
+        <div><strong>{{ registry_count }}</strong><span>{{ t("review_metric_altegio") }}</span></div>
+      </div>
+    </section>
+
+    <section class="card review-card review-report-data">
+      <div class="review-card-heading">
+        <div>
+          <h2>{{ t("review_report_data_title") }}</h2>
+          <p>{{ t("review_report_data_hint") }}</p>
+        </div>
+        <span class="review-count-tag">{{ report_count }}</span>
+      </div>
+      <div class="review-data-list review-data-list-compact">
+        <div><span>{{ t("reported_locations_label") }}</span><strong>{{ report_count }}</strong></div>
+        <div><span>{{ t("turnover") }}</span><strong>{{ format_amount(draft.turnover, draft.currency) }}</strong></div>
+      </div>
+      {% if payment_summary %}
+      <div class="payment-summary-mini">
+        <h3>{{ t("payment_summary_title") }}</h3>
         <div class="payment-summary-grid">
           {% for item in payment_summary if item.count %}
-          <div class="payment-summary-row">
-            <span>{{ t("payment_summary_" ~ item.key) }}</span>
-            <strong>{{ item.count }}</strong>
-          </div>
+          <div class="payment-summary-row"><span>{{ t("payment_summary_" ~ item.key) }}</span><strong>{{ item.count }}</strong></div>
           {% endfor %}
         </div>
+      </div>
+      {% endif %}
+      <details class="ids-details">
+        <summary>{{ t("show_all_report_rows", count=report_count) }}</summary>
         {% if report_rows %}
-        <details class="status-register">
-          <summary>{{ t("show_payment_statuses", count=report_rows|length) }}</summary>
-          <div class="status-register-table">
-            <div class="status-register-heading"><span>{{ t("location_id_label") }}</span><span>{{ t("payment_status_label") }}</span></div>
-            {% for row in report_rows %}
-            <div>
-              <span><strong>{{ row.location_id }}</strong>{% if row.name %} · {{ row.name }}{% endif %}</span>
-              <span class="status-chip {{ 'is-match' if row.payment and row.status == 'paid' else 'is-mismatch' if not row.status else '' }}">{{ t("payment_status_" ~ row.status) if row.status else t("payment_status_missing") }}</span>
-            </div>
-            {% endfor %}
+        <div class="report-register-table">
+          <div class="report-register-heading">
+            <span>{{ t("application_label") }}</span>
+            <span>{{ t("location_id_label") }}</span>
+            <span>{{ t("payment_status_label") }}</span>
+            <span>{{ t("review_altegio_short") }}</span>
           </div>
-        </details>
-        {% endif %}
-      </section>
-
-      {% if application_breakdown|length > 1 %}
-      <section class="review-source application-breakdown">
-        <header class="review-source-head">
-          <p class="eyebrow">{{ t("applications_short") }}</p>
-          <h2>{{ t("application_breakdown") }}</h2>
-        </header>
-        <div class="review-compact-list">
-          {% for item in application_breakdown %}
-          <article class="review-compact-row">
-            <div class="review-compact-app">
-              <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
-              {% if item.application_match != "matched" %}
-              <span class="tag warning">{{ t("application_not_matched") }}</span>
-              {% endif %}
-            </div>
-            <div class="application-breakdown-meta">
-              <span>{{ format_amount(item.turnover, item.currency) }}</span>
-              <span>{{ item.location_ids|length }} {{ t("reported_locations_short") }}</span>
-            </div>
-            {% if item.application_usage_ready %}
-            <span class="review-application-status {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
-              {{ t("review_result_match") if not item.application_missing_active and not item.application_unknown_locations else t("review_result_mismatch") }}
-            </span>
-            {% endif %}
-            {% if item.location_ids %}
-            <details class="ids-details">
-              <summary>{{ t("reported_locations_details", count=item.location_ids|length) }}</summary>
-              <div class="location-id-table">
-                <div class="location-id-heading">{{ t("location_id_label") }}</div>
-                {% for location_id in item.location_ids %}<div>{{ location_id }}</div>{% endfor %}
-              </div>
-            </details>
-            {% endif %}
-          </article>
+          {% for row in report_rows %}
+          <div>
+            <span>{{ row.application or t("application_not_identified") }}</span>
+            <span><strong>{{ row.location_id }}</strong>{% if row.name %}<small>{{ row.name }}</small>{% endif %}</span>
+            <span class="status-chip {{ 'is-match' if row.payment and row.status == 'paid' else 'is-mismatch' if not row.status else '' }}">{{ t("payment_status_" ~ row.status) if row.status else t("payment_status_missing") }}</span>
+            <span class="status-chip {{ 'is-match' if row.connected else 'is-mismatch' }}">{{ t("review_found") if row.connected else t("review_not_found") }}</span>
+          </div>
           {% endfor %}
         </div>
-      </section>
-      {% endif %}
-
-      <div class="field">
-        <label for="comment">{{ t("comment") }} <span>{{ t("optional") }}</span></label>
-        <textarea id="comment" name="comment" rows="3" placeholder="{{ t('comment_placeholder') }}">{{ comment|default("") }}</textarea>
-      </div>
-      <p class="privacy">{{ t("review_values_hint") }}</p>
-      <div class="review-submit-bar">
-        {% if draft.reported_share is not none %}
-        <span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>
-        {% endif %}
-        {% if registry_gap_count or missing_status_count %}
-          <button class="button" type="button" data-open-tab="differences">{{ t("review_explain_button") }}</button>
         {% else %}
-        <button class="button" type="submit">{{ t("confirm_submit") }}</button>
+        <p class="hint">{{ t("ids_not_in_file") }}</p>
         {% endif %}
-      </div>
+      </details>
     </section>
 
-    <section class="card review-form tab-panel {{ 'active' if active_tab == 'differences' else '' }}" data-panel="differences">
-      {% if required_discrepancies or optional_discrepancies %}
-        <section class="review-guidance">
-          <p class="eyebrow">{{ t("review_page_eyebrow") }}</p>
-          <h2>{{ t("difference_title") }}</h2>
-          <p>{{ t("difference_intro", count=required_count) }}</p>
-          <div class="review-progress">
-            <strong>{{ t("payment_statuses_read", filled=reasons_filled, total=reasons_total) }}</strong>
-          </div>
-          <div class="form-actions review-file-actions">
-            <a class="button" href="/submit/{{ partner.token }}/review/{{ draft.token }}/full-report.csv">{{ t("download_full_report") }}</a>
-            <a class="text-link" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_filled_report") }}</a>
-          </div>
-          <p class="hint">{{ t("full_report_hint") }}</p>
-          <p class="hint">{{ t("review_status_options") }}</p>
-        </section>
+    <section class="card review-card review-issues">
+      <div class="review-card-heading">
+        <div>
+          <h2>{{ t("review_issues_title") }}</h2>
+          <p>{{ t("review_issues_hint") }}</p>
+        </div>
+        {% if attention_count %}<span class="review-count-tag is-warning">{{ attention_count }}</span>{% endif %}
+      </div>
 
-        {% if required_discrepancies %}
-        <section class="review-file-check">
-          <h2>{{ t("file_status_check") }}</h2>
-          <p class="hint">{{ t("file_status_check_hint") }}</p>
-          <div class="review-salon-list">
-            {% for item in required_discrepancies %}
-            <div class="review-salon-row">
-              <div>
-                <strong>{{ item.location_id }}</strong>
-                {% if location_details and location_details.get(item.location_id, {}).get('location_name') %}
-                <span>{{ location_details[item.location_id].location_name }}</span>
-                {% endif %}
-              </div>
-              {% if report_payment_statuses.get(item.location_id) %}
-              <span class="status-chip is-match">{{ t("status_read") }}</span>
-              {% else %}
-              <span class="status-chip is-mismatch">{{ t("status_missing") }}</span>
-              {% endif %}
-            </div>
-            {% endfor %}
-          </div>
-        </section>
-        {% endif %}
-
-        {% if optional_discrepancies %}
-        <details class="review-additional-check">
-          <summary>{{ t("idle_installs", count=optional_discrepancies|length) }}</summary>
-          <p class="hint">{{ t("idle_installs_hint") }}</p>
-          <p class="hint">{{ t("idle_report_hint") }}</p>
-          <a class="text-link" href="/submit/{{ partner.token }}/review/{{ draft.token }}/differences.csv?kind=connected">{{ t("download_idle_installs") }}</a>
-        </details>
-        {% endif %}
+      {% if not snapshot_ready %}
+      <div class="notice neutral">{{ t("snapshot_missing") }}</div>
+      {% elif not attention_count %}
+      <div class="notice success">{{ t("review_no_differences") }}</div>
       {% else %}
-        <div class="notice neutral">{{ t("review_no_differences") }}</div>
+      <div class="issue-summary">
+        {% if registry_gap_count %}<div><strong>{{ registry_gap_count }}</strong><span>{{ t("issue_missing_in_report") }}</span></div>{% endif %}
+        {% if missing_payment_status_count %}<div><strong>{{ missing_payment_status_count }}</strong><span>{{ t("issue_status_missing") }}</span></div>{% endif %}
+        {% if payment_not_found_count %}<div><strong>{{ payment_not_found_count }}</strong><span>{{ t("issue_payment_not_found") }}</span></div>{% endif %}
+      </div>
+      <div class="problem-list">
+        {% for item in required_discrepancies %}
+        <div class="problem-row">
+          <div>
+            <strong>{{ item.location_id }}</strong>
+            {% if location_details and location_details.get(item.location_id, {}).get('location_name') %}<small>{{ location_details[item.location_id].location_name }}</small>{% endif %}
+          </div>
+          {% if item.kind == "connected_not_reported" %}<span class="problem-label">{{ t("issue_missing_in_report") }}</span>
+          {% elif item.kind == "payment_not_found" %}<span class="problem-label">{{ t("issue_payment_not_found") }}</span>
+          {% else %}<span class="problem-label">{{ t("issue_status_missing") }}</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
       {% endif %}
+      {% if optional_count %}
+      <details class="optional-issues">
+        <summary>{{ t("show_optional_issues", count=optional_count) }}</summary>
+        <div class="problem-list">
+          {% for item in optional_discrepancies %}
+          <div class="problem-row is-optional"><div><strong>{{ item.location_id }}</strong></div><span class="problem-label">{{ t("issue_connected_inactive") if item.kind == "connected_not_active" else t("issue_extra_rows") }}</span></div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </section>
 
-      <div class="review-submit-bar">
-        {% if draft.reported_share is not none %}
-        <span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>
-        {% endif %}
-        <button class="button" type="submit">{{ t("confirm_submit") }}</button>
+    {% if required_count %}
+    <section class="card review-card review-next-step">
+      <h2>{{ t("review_next_step_title") }}</h2>
+      <p>{{ t("review_next_step_hint") }}</p>
+      <div class="review-file-actions">
+        <a class="button" href="/submit/{{ partner.token }}/review/{{ draft.token }}/full-report.csv">{{ t("download_full_report") }}</a>
+        <a class="text-link" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_filled_report") }}</a>
       </div>
     </section>
+    {% endif %}
+
+    <section class="review-comment">
+      <label for="comment">{{ t("comment") }} <span>{{ t("optional") }}</span></label>
+      <textarea id="comment" name="comment" rows="3" placeholder="{{ t('comment_placeholder') }}">{{ comment|default("") }}</textarea>
+    </section>
+
+    <div class="review-submit-bar">
+      {% if draft.reported_share is not none %}<span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>{% endif %}
+      {% if required_count %}<button class="button" type="button" disabled>{{ t("confirm_submit_blocked") }}</button>
+      {% else %}<button class="button" type="submit">{{ t("confirm_submit") }}</button>{% endif %}
+    </div>
   </form>
 </section>
 {% endblock %}

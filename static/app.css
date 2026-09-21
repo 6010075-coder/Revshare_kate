@@ -309,6 +309,55 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 textarea { resize: vertical; }
 .privacy { text-align: center; font-size: .7rem; margin: 14px 0 0; }
 .review-page { max-width: 900px; margin: 0 auto; }
+.review-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+.review-header h1 { margin: 0 0 6px; }
+.review-header p:not(.eyebrow) { max-width: 58ch; margin: 0; color: var(--muted); }
+.review-card { padding: 22px; margin-bottom: 14px; }
+.review-overview { background: #fbfbfe; }
+.review-overview-top { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.review-result-title { margin: 0 0 5px; font-size: 1.45rem; }
+.review-result-title.is-good { color: var(--green-text); }
+.review-result-title.is-warning { color: var(--amber-text); }
+.review-result-copy { max-width: 52ch; margin: 0; color: var(--muted); }
+.review-due { min-width: 145px; padding: 12px 14px; border: 1px solid #f2d36e; border-radius: 12px; background: var(--accent-soft); }
+.review-due span { display: block; color: var(--amber-text); font-size: .75rem; font-weight: 700; }
+.review-due strong { display: block; margin-top: 4px; font: 700 1.3rem Manrope; }
+.review-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 20px; }
+.review-metrics > div { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+.review-metrics strong { font: 700 1.35rem Manrope; }
+.review-metrics span { color: var(--muted); font-size: .76rem; }
+.review-card-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.review-card-heading h2 { margin: 0 0 4px; }
+.review-card-heading p { margin: 0; color: var(--muted); font-size: .84rem; }
+.review-count-tag { min-width: 30px; padding: 4px 9px; border-radius: 99px; background: var(--surface); color: var(--ink); text-align: center; font-weight: 700; }
+.review-count-tag.is-warning { color: var(--amber-text); background: var(--amber-soft); }
+.review-data-list-compact { max-width: 430px; }
+.payment-summary-mini { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.payment-summary-mini h3 { margin: 0 0 4px; font-size: .92rem; }
+.report-register-table { display: grid; gap: 4px; margin-top: 12px; overflow-x: auto; }
+.report-register-table > div { display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(130px, 1fr) minmax(130px, .9fr) 110px; align-items: center; gap: 12px; min-width: 650px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.report-register-table small { display: block; color: var(--muted); font-size: .72rem; }
+.report-register-heading { color: var(--muted); background: var(--surface) !important; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.review-issues { background: #fff; }
+.issue-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.issue-summary > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 11px 12px; border: 1px solid #f5d58c; border-radius: 10px; background: var(--amber-soft); }
+.issue-summary strong { font: 700 1.2rem Manrope; }
+.issue-summary span { color: var(--amber-text); font-size: .78rem; text-align: right; }
+.problem-list { display: grid; gap: 5px; }
+.problem-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; }
+.problem-row > div { display: grid; gap: 2px; min-width: 0; }
+.problem-row small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.problem-row.is-optional { background: var(--surface); }
+.problem-label { flex: 0 0 auto; color: var(--amber-text); font-size: .76rem; font-weight: 700; }
+.optional-issues { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.optional-issues summary { cursor: pointer; color: var(--muted); font-size: .82rem; font-weight: 700; }
+.optional-issues .problem-list { margin-top: 10px; max-height: 260px; overflow: auto; }
+.review-next-step { background: var(--surface); }
+.review-next-step h2 { margin: 0 0 5px; }
+.review-next-step p { margin: 0 0 14px; color: var(--muted); }
+.review-comment { margin: 18px 0 0; }
+.review-comment label { display: block; margin-bottom: 7px; font-weight: 700; }
+.review-comment label span { color: var(--muted); font-size: .75rem; font-weight: 400; }
 .review-form-shell { margin-top: 8px; }
 .review-form-shell .tabs { margin-bottom: 0; }
 .review-form-shell .tabs .tag { margin-left: 6px; vertical-align: middle; }
@@ -655,6 +704,11 @@ textarea { resize: vertical; }
 
 @media (max-width: 800px) {
   .payment-summary-grid { grid-template-columns: 1fr; }
+  .review-header, .review-overview-top { align-items: stretch; flex-direction: column; }
+  .review-header .button { align-self: start; }
+  .review-due { min-width: 0; }
+  .review-metrics, .issue-summary { grid-template-columns: 1fr; }
+  .review-card { padding: 16px; }
   .topbar { height: auto; padding: 12px 18px; align-items: flex-start; }
   .brand span:last-child { display: none; }
   nav { gap: 13px; flex-wrap: wrap; justify-content: flex-end; }

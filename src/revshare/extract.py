@@ -244,7 +244,9 @@ def _standard_partner_workbook(
                 folded = " ".join(cell.split()).casefold()
                 if _is_location_header(cell):
                     columns["location"] = column
-                if _is_application_header(cell):
+                if _is_application_id_header(cell):
+                    columns["application_id"] = column
+                elif _is_application_header(cell):
                     columns["application"] = column
                 if (
                     "received by partner" in folded
@@ -299,8 +301,11 @@ def _standard_partner_workbook(
                 continue
             location_ids.append(location_match.group(1))
             application_ref = ""
-            if "application" in columns and columns["application"] < len(row):
-                application_ref = row[columns["application"]].strip()
+            for application_column in ("application_id", "application"):
+                if application_column in columns and columns[application_column] < len(row):
+                    application_ref = row[columns[application_column]].strip()
+                    if application_ref:
+                        break
             group_key = application_ref or "__unassigned__"
             group = application_groups.setdefault(
                 group_key,
@@ -355,7 +360,7 @@ def _standard_partner_workbook(
         if not used_rows:
             notes.append("turnover_not_found")
         application_breakdown = []
-        if "application" in columns and application_groups:
+        if ("application" in columns or "application_id" in columns) and application_groups:
             notes.append("application_column")
             if "__unassigned__" in application_groups:
                 notes.append("application_not_identified")
@@ -396,7 +401,9 @@ def _structured_application_report(
     for index, row in enumerate(rows[:20]):
         for column, cell in enumerate(row):
             folded = " ".join(cell.split()).casefold()
-            if _is_application_header(cell):
+            if _is_application_id_header(cell):
+                columns["application_id"] = column
+            elif _is_application_header(cell):
                 columns["application"] = column
             if _is_location_header(cell):
                 columns["location"] = column
@@ -408,7 +415,9 @@ def _structured_application_report(
                 columns["currency"] = column
             if any(hint in folded for hint in SHARE_HINTS):
                 columns["share"] = column
-        if {"application", "location", "amount"} <= columns.keys():
+        if {"location", "amount"} <= columns.keys() and (
+            "application" in columns or "application_id" in columns
+        ):
             header_index = index
             break
     if header_index is None:
@@ -430,11 +439,12 @@ def _structured_application_report(
         if not location_match:
             continue
         location_id = location_match.group(1)
-        application_ref = (
-            row[columns["application"]].strip()
-            if columns["application"] < len(row)
-            else ""
-        )
+        application_ref = ""
+        for application_column in ("application_id", "application"):
+            if application_column in columns and columns[application_column] < len(row):
+                application_ref = row[columns[application_column]].strip()
+                if application_ref:
+                    break
         group_key = application_ref or "__unassigned__"
         currency = default_currency or "USD"
         if "currency" in columns and columns["currency"] < len(row):
@@ -442,9 +452,6 @@ def _structured_application_report(
         amount = _signed_value_from_cell(
             row[columns["amount"]] if columns["amount"] < len(row) else ""
         )
-        if amount is None:
-            continue
-        currencies.add(currency)
         group = groups.setdefault(
             group_key,
             {
@@ -456,6 +463,10 @@ def _structured_application_report(
             },
         )
         group["location_ids"].append(location_id)
+        location_ids.append(location_id)
+        if amount is None:
+            continue
+        currencies.add(currency)
         group["turnover"] = round(float(group["turnover"]) + amount, 2)
         turnover += amount
         share = None
@@ -466,7 +477,6 @@ def _structured_application_report(
         if share is not None:
             group["reported_share"] = round(float(group["reported_share"]) + share, 2)
             total_share += share
-        location_ids.append(location_id)
 
     if not groups:
         return None
@@ -584,12 +594,13 @@ def _report_annotations(
     dict[str, str],
     dict[str, str],
     dict[str, str],
+    bool,
 ]:
     """Read participation and explanation columns from a completed full report."""
     try:
         rows = _rows_from_file(path, period)
     except Exception:
-        return [], None, {}, {}, {}, {}
+        return [], None, {}, {}, {}, {}, False
     location_header = _report_column(rows, ("location id", "location_id", "id филиала", "altegio id"))
     reason_header = _report_column(rows, ("reason", "причина", "почему"))
     status_header = _report_column(rows, ("payment status", "статус оплаты", "статус платежа", "status"))
@@ -598,12 +609,14 @@ def _report_annotations(
         rows,
         ("included in calculation", "included", "participates", "участвует", "в расчёте", "в расчете"),
     )
-    if not location_header or not participation_header:
-        return [], None, {}, {}, {}, {}
+    if not location_header:
+        return [], None, {}, {}, {}, {}, False
     header_index, location_column = location_header
-    participation_row, participation_column = participation_header
-    if participation_row != header_index:
-        return [], None, {}, {}, {}, {}
+    participation_column = (
+        participation_header[1]
+        if participation_header and participation_header[0] == header_index
+        else None
+    )
     reason_column = reason_header[1] if reason_header and reason_header[0] == header_index else None
     status_column = status_header[1] if status_header and status_header[0] == header_index else None
     comment_column = comment_header[1] if comment_header and comment_header[0] == header_index else None
@@ -621,7 +634,11 @@ def _report_annotations(
             continue
         location_id = match.group(1)
         all_ids.append(location_id)
-        participation = row[participation_column].strip().casefold() if participation_column < len(row) else ""
+        participation = (
+            row[participation_column].strip().casefold()
+            if participation_column is not None and participation_column < len(row)
+            else ""
+        )
         if participation in {"да", "yes", "y", "1", "true", "включить", "участвует"}:
             included.add(location_id)
         raw_status = row[status_column] if status_column is not None and status_column < len(row) else ""
@@ -639,19 +656,38 @@ def _report_annotations(
             reasons[location_id] = reason
             if detail:
                 details[location_id] = detail
-    return _unique(all_ids), included, reasons, details, statuses, status_details
+    return (
+        _unique(all_ids),
+        included if participation_column is not None else None,
+        reasons,
+        details,
+        statuses,
+        status_details,
+        status_column is not None,
+    )
 
 
 def _apply_report_annotations(
     parsed: ParsedPartnerReport, path: Path, period: str | None
 ) -> ParsedPartnerReport:
-    all_ids, included, reasons, details, statuses, status_details = _report_annotations(path, period)
+    all_ids, included, reasons, details, statuses, status_details, has_status_column = _report_annotations(
+        path, period
+    )
     if included is not None:
         parsed.location_ids = [location_id for location_id in parsed.location_ids if location_id in included]
         # Rows without an amount are still valid rows in the full report.
         if not parsed.location_ids:
             parsed.location_ids = sorted(included)
         parsed.notes.append("participation_column")
+    elif has_status_column:
+        # In the compact partner format every row is an application/location pair.
+        # Rows with a real payment are the rows included in the payout calculation;
+        # rows with another status remain in the full register for reconciliation.
+        parsed.location_ids = [
+            location_id for location_id in all_ids if statuses.get(location_id) == "paid"
+        ]
+    if has_status_column:
+        parsed.notes.append("payment_status_column")
     parsed.all_location_ids = all_ids or list(parsed.location_ids)
     parsed.report_reasons = reasons
     parsed.report_reason_details = details
@@ -876,20 +912,27 @@ LOCATION_HEADER_PHRASES = (
 APPLICATION_HEADER_NAMES = {
     "app",
     "application",
-    "application id",
     "application url",
     "integration",
-    "app id",
     "приложение",
-    "приложение id",
     "интеграция",
 }
 APPLICATION_HEADER_PHRASES = (
-    "application id",
     "application url",
-    "app id",
     "приложение",
     "интеграц",
+)
+APPLICATION_ID_HEADER_NAMES = {
+    "app id",
+    "application id",
+    "приложение id",
+    "id приложения",
+}
+APPLICATION_ID_HEADER_PHRASES = (
+    "application id",
+    "app id",
+    "приложение id",
+    "id приложения",
 )
 TOTAL_LABELS = ("total", "totals", "итого", "всего", "разом")
 LOCATION_ID_RE = re.compile(r"(?<![\d.,])(\d{4,8})(?:-alt)?(?![\d.,])", re.I)
@@ -919,6 +962,15 @@ def _is_application_header(cell: str) -> bool:
     if folded in APPLICATION_HEADER_NAMES:
         return True
     return any(phrase in folded for phrase in APPLICATION_HEADER_PHRASES)
+
+
+def _is_application_id_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 60:
+        return False
+    if folded in APPLICATION_ID_HEADER_NAMES:
+        return True
+    return any(phrase in folded for phrase in APPLICATION_ID_HEADER_PHRASES)
 
 
 def _is_total_line(text: str) -> bool:

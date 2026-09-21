@@ -1267,6 +1267,21 @@ class Store:
         active = {row["location_id"] for row in rows if row["is_active"]}
         return connected, active
 
+    def application_payment_ids(
+        self, partner_id: int, period: str, application_id: int
+    ) -> set[str]:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT location_id
+                FROM usage_application_snapshots
+                WHERE partner_id = ? AND period = ? AND application_id = ?
+                  AND had_payment = 1
+                """,
+                (partner_id, period, application_id),
+            ).fetchall()
+        return {row["location_id"] for row in rows}
+
     def replace_application_usage(
         self,
         partner_id: int,
