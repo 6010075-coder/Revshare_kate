@@ -94,8 +94,6 @@
       <tr>
         <td>
           <strong><a class="text-link" href="/admin/partners/{{ item.id }}/edit">{{ item.name }}</a></strong>
-          <small>{{ t("category_" + item.category) if item.category else t("category_not_set") }}</small>
-          <small>{{ item.telegram or item.email or t("contact_missing") }}</small>
         </td>
         <td>
           {% if item.report_id %}
@@ -139,8 +137,6 @@
         <td class="actions">
           {% if item.report_id %}
             <a href="/reports/{{ item.report_id }}">{{ t("open_report") }}</a>
-          {% else %}
-            <a href="/submit/{{ item.token }}?period={{ period }}">{{ t("form_link") }}</a>
           {% endif %}
         </td>
       </tr>

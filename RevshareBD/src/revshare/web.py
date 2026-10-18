@@ -2956,4 +2956,9 @@ app = create_app()
 
 
 def run() -> None:
-    uvicorn.run("revshare.web:app", host="0.0.0.0", port=43127, reload=False)
+    uvicorn.run(
+        "revshare.web:app",
+        host=os.getenv("REVSHARE_HOST", "0.0.0.0"),
+        port=43127,
+        reload=False,
+    )
