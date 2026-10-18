@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_macros.html" import period_select %}
+{% block title %}{{ t("monthly_report") }} · {{ partner.name }}{% endblock %}
+{% block content %}
+<section class="form-shell">
+  <div class="form-intro">
+    <p class="eyebrow">{{ t("monthly_report") }}</p>
+    <h1>{{ partner.name }}</h1>
+    <p>{{ t("submit_intro") }}</p>
+    {% if deadline_label %}
+    <p class="submit-deadline">{{ t("submit_deadline", deadline=deadline_label) }}</p>
+    {% endif %}
+    <div class="partner-check-guide">
+      <strong>{{ t("partner_check_title") }}</strong>
+      <p>{{ t("partner_check_text") }}</p>
+    </div>
+    {% if application_links %}
+    <div class="info-box application-list">
+      {% for link in application_links %}
+      {% if link is mapping %}
+      <a class="application-link" href="{{ link.url }}" target="_blank" rel="noopener">{{ link.comment or link.url }}</a>
+      {% else %}
+      <a class="application-link" href="{{ link }}" target="_blank" rel="noopener">{{ link }}</a>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <form method="post" action="/submit/{{ partner.token }}/parse" enctype="multipart/form-data" class="card form-card">
+    <div class="field">
+      <label for="period">{{ t("report_month") }}</label>
+      {{ period_select("period", "period", period, period_options, t) }}
+    </div>
+    <div class="field">
+      <label for="attachment">{{ t("registry_file") }}</label>
+      <input id="attachment" name="attachment" type="file" accept=".xlsx,.xls,.csv,.pdf" required>
+      <small>{{ t("file_hint") }}</small>
+      <small>{{ t("multi_app_report_hint") }}</small>
+      <a class="text-link" href="/submit/{{ partner.token }}/template.csv?period={{ period }}">{{ t("download_report_template") }}</a>
+    </div>
+    <button class="button full" type="submit">{{ t("upload_and_review") }}</button>
+    <p class="privacy">{{ t("privacy") }}</p>
+  </form>
+</section>
+{% endblock %}

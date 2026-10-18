@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ t("app_name") }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20260921-2">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ request.url.path if partner_page else '/' }}">
+      <span class="brand-mark">A</span>
+      <span>{{ t("app_name") }}</span>
+    </a>
+    <nav>
+      {% if not partner_page %}
+      <a href="/">{{ t("dashboard") }}</a>
+      <a href="/admin/partners">{{ t("partners") }}</a>
+      <a href="/admin/accrual">{{ t("accrual") }}</a>
+      <a href="/admin/settings">{{ t("settings") }}</a>
+      {% endif %}
+      <label class="language-switcher" aria-label="Language">
+        <select data-language data-next="{{ language_next }}">
+          {% for code in ui_languages %}
+          <option value="{{ code }}" {% if lang == code %}selected{% endif %}>{{ language_labels[code] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </nav>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', path='/app.js') }}"></script>
+</body>
+</html>

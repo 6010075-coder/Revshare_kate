@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ t("report_received") }}{% endblock %}
+{% block content %}
+<section class="result card">
+  <div class="result-icon {{ review.level }}">✓</div>
+  <p class="eyebrow">{{ t("report_received") }}</p>
+  <h1>{{ t("thank_you") }}, {{ partner.name }}</h1>
+  <p>{{ t("saved_message", period=period) }}</p>
+  <div class="review-box neutral">
+    <div>
+      <span>{{ t("automatic_check") }}</span>
+      {% if discrepancy_count %}
+      <strong>{{ t("report_status_discrepancies") }}</strong>
+      <p>{{ t("discrepancy_saved") }}</p>
+      {% else %}
+      <strong>{{ t("report_status_checked") }}</strong>
+      <p>{{ t("report_will_be_checked") }}</p>
+      {% endif %}
+    </div>
+  </div>
+  <ul class="reason-list partner-result">
+    {% if file_source and file_ids %}
+    <li>{{ t("ids_from_file", count=file_ids) }}</li>
+    {% elif file_source in ["not_found", "unreadable"] %}
+    <li>{{ t("ids_not_in_file") }}</li>
+    {% endif %}
+  </ul>
+  <a class="button secondary" href="/submit/{{ partner.token }}?period={{ period }}">{{ t("edit_report") }}</a>
+</section>
+{% endblock %}

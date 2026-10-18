@@ -1,0 +1,1112 @@
+from __future__ import annotations
+
+import csv
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from openpyxl import load_workbook
+from pypdf import PdfReader
+
+from revshare.fx import valid_period
+
+MONEY_RE = re.compile(
+    r"(?<![\w.])(?P<amount>"
+    r"\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d{1,2})?"
+    r"|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?"
+    r"|\d+(?:[.,]\d{1,2})?"
+    r")(?![\d\w])"
+)
+CURRENCY_RE = re.compile(r"\b(USD|EUR|AMD|RUB|KZT|AED|TRY|UAH|GBP|PLN|CZK)\b", re.I)
+TOTAL_HINTS = (
+    "total",
+    "оборот",
+    "выручка",
+    "gmv",
+    "turnover",
+    "revenue",
+    "revshare",
+    "ревшер",
+    "к оплате",
+    "due",
+    "share",
+)
+
+
+@dataclass
+class AmountCandidate:
+    amount: float
+    raw: str
+    currency: str | None = None
+    label: str = ""
+    confidence: str = "low"
+
+
+@dataclass
+class ExtractedReport:
+    source: str
+    partner_hint: str
+    candidates: list[AmountCandidate] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def to_dict(self) -> dict:
+        payload = asdict(self)
+        return payload
+
+
+@dataclass
+class ParsedPartnerReport:
+    turnover: float | None
+    currency: str | None
+    reported_share: float | None
+    location_ids: list[str]
+    location_source: str
+    notes: list[str] = field(default_factory=list)
+    application_breakdown: list[dict[str, object]] = field(default_factory=list)
+    report_reasons: dict[str, str] = field(default_factory=dict)
+    report_reason_details: dict[str, str] = field(default_factory=dict)
+    all_location_ids: list[str] = field(default_factory=list)
+    report_payment_statuses: dict[str, str] = field(default_factory=dict)
+    report_status_details: dict[str, str] = field(default_factory=dict)
+
+
+def _parse_amount(raw: str) -> float | None:
+    cleaned = raw.strip().replace("\u00a0", " ").replace(" ", "")
+    if cleaned.count(",") == 1 and cleaned.count(".") == 0:
+        cleaned = cleaned.replace(",", ".")
+    elif cleaned.count(".") > 1 and "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif cleaned.count(",") > 1:
+        cleaned = cleaned.replace(",", "")
+    elif "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+TURNOVER_HINTS = (
+    "turnover",
+    "revenue",
+    "gmv",
+    "amount",
+    "оборот",
+    "выручка",
+    "виручка",
+    "сумма",
+)
+SHARE_HINTS = (
+    "revshare",
+    "revenue share",
+    "reward",
+    "commission",
+    "комиссия",
+    "комісія",
+    "altegio",
+    "к оплате",
+    "до сплати",
+)
+CURRENCY_SYMBOLS = {
+    "$": "USD",
+    "€": "EUR",
+    "₸": "KZT",
+    "₴": "UAH",
+    "₽": "RUB",
+}
+
+
+def _currency_from_text(text: str, default: str | None) -> str | None:
+    code = CURRENCY_RE.search(text)
+    if code:
+        return code.group(1).upper()
+    for symbol, currency in CURRENCY_SYMBOLS.items():
+        if symbol in text:
+            return currency
+    return default
+
+
+def _value_from_cell(cell: str) -> float | None:
+    if not cell.strip() or "%" in cell:
+        return None
+    match = MONEY_RE.search(cell)
+    return _parse_amount(match.group("amount")) if match else None
+
+
+def _signed_value_from_cell(cell: str) -> float | None:
+    value = _value_from_cell(cell)
+    if value is None:
+        return None
+    if cell.strip().startswith(("-", "−")):
+        return -abs(value)
+    return value
+
+
+def _total_line_values(rows: list[list[str]]) -> tuple[float | None, float | None]:
+    """Read explicit total rows, keeping turnover and Altegio share apart."""
+    turnover = None
+    share = None
+    for row in rows:
+        line = " ".join(cell for cell in row if cell.strip())
+        if not _is_total_line(line):
+            continue
+        match = None
+        for match in MONEY_RE.finditer(line):
+            pass
+        if match is None:
+            continue
+        value = _parse_amount(match.group("amount"))
+        if value is None:
+            continue
+        folded = line.casefold()
+        if any(hint in folded for hint in SHARE_HINTS):
+            share = value
+        else:
+            turnover = value
+    return turnover, share
+
+
+def _labeled_value(rows: list[list[str]], hints: tuple[str, ...]) -> float | None:
+    matches: list[float] = []
+    for row in rows:
+        for column, cell in enumerate(row):
+            folded = cell.casefold()
+            if not any(hint in folded for hint in hints):
+                continue
+            if _is_location_header(cell):
+                continue
+            own_value = _value_from_cell(cell)
+            if own_value is not None:
+                matches.append(own_value)
+            for adjacent in row[column + 1 : column + 3]:
+                value = _value_from_cell(adjacent)
+                if value is not None:
+                    matches.append(value)
+                    break
+    return matches[-1] if matches else None
+
+
+def _column_total(rows: list[list[str]], hints: tuple[str, ...]) -> float | None:
+    for header_index, row in enumerate(rows[:30]):
+        for column, cell in enumerate(row):
+            folded = cell.casefold().strip()
+            if not any(hint in folded for hint in hints):
+                continue
+            if _is_location_header(cell):
+                continue
+            values: list[float] = []
+            explicit_total = None
+            for data_row in rows[header_index + 1 :]:
+                if column >= len(data_row):
+                    continue
+                value = _value_from_cell(data_row[column])
+                if value is None:
+                    continue
+                row_label = " ".join(data_row[:column]).casefold()
+                if any(label in row_label for label in ("total", "итого", "всего", "разом")):
+                    explicit_total = value
+                else:
+                    values.append(value)
+            if explicit_total is not None:
+                return explicit_total
+            if values:
+                return round(sum(values), 2)
+    return None
+
+
+def _standard_partner_workbook(
+    path: Path, period: str | None = None
+) -> ParsedPartnerReport | None:
+    """Read the recommended Integration Hub partner report.
+
+    Partners fill the input columns; formula cells may have no cached values,
+    so totals are calculated here from amount, FX and contractual rate.
+    """
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return None
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    wanted = period_sheet_titles(period)
+    sheets = [
+        sheet
+        for sheet in workbook.worksheets
+        if not wanted or " ".join(sheet.title.split()).casefold() in wanted
+    ] or list(workbook.worksheets)
+    for sheet in sheets:
+        rows = _sheet_rows(sheet)
+        header_index = None
+        columns: dict[str, int] = {}
+        for index, row in enumerate(rows[:20]):
+            for column, cell in enumerate(row):
+                folded = " ".join(cell.split()).casefold()
+                if _is_location_header(cell):
+                    columns["location"] = column
+                if _is_application_id_header(cell):
+                    columns["application_id"] = column
+                elif _is_application_header(cell):
+                    columns["application"] = column
+                if (
+                    "received by partner" in folded
+                    or "получено партнёром" in folded
+                ) and "report currency" not in folded and "валюта отчёта" not in folded:
+                    columns["amount"] = column
+                if folded.startswith("payment currency") or folded.startswith(
+                    "валюта платежа"
+                ):
+                    columns["currency"] = column
+                if "monthly avg rate" in folded or "среднемес. курс" in folded:
+                    columns["fx"] = column
+                if (
+                    ("altegio" in folded and "rate" in folded)
+                    or ("ставка" in folded and "altegio" in folded)
+                ):
+                    columns["rate"] = column
+            if {"location", "amount", "currency"} <= columns.keys():
+                header_index = index
+                break
+        if header_index is None:
+            continue
+
+        location_ids: list[str] = []
+        turnover = 0.0
+        share = 0.0
+        used_rows = 0
+        skipped_fx = 0
+        report_currency = "USD"
+        application_groups: dict[str, dict[str, object]] = {}
+        header_text = " ".join(rows[header_index])
+        report_match = re.search(
+            r"\((USD|EUR|AMD|RUB|KZT|AED|TRY|UAH|GBP|PLN|CZK)"
+            r"(?:,\s*(?:report currency|валюта отч[её]та))?\)",
+            header_text,
+            re.I,
+        )
+        if report_match:
+            report_currency = report_match.group(1).upper()
+
+        for row in rows[header_index + 1 :]:
+            line = " ".join(row)
+            if _is_total_line(line):
+                break
+            location_cell = (
+                _plain_id_cell(row[columns["location"]])
+                if columns["location"] < len(row)
+                else ""
+            )
+            location_match = LOCATION_COLUMN_ID_RE.search(location_cell)
+            if not location_match:
+                continue
+            location_ids.append(location_match.group(1))
+            application_ref = ""
+            for application_column in ("application_id", "application"):
+                if application_column in columns and columns[application_column] < len(row):
+                    application_ref = row[columns[application_column]].strip()
+                    if application_ref:
+                        break
+            group_key = application_ref or "__unassigned__"
+            group = application_groups.setdefault(
+                group_key,
+                {
+                    "application_ref": application_ref,
+                    "turnover": 0.0,
+                    "reported_share": 0.0,
+                    "currency": report_currency,
+                    "location_ids": [],
+                },
+            )
+            group["location_ids"].append(location_match.group(1))
+            amount_cell = row[columns["amount"]] if columns["amount"] < len(row) else ""
+            amount = _signed_value_from_cell(amount_cell)
+            if amount is None:
+                continue
+            currency_cell = (
+                row[columns["currency"]] if columns["currency"] < len(row) else ""
+            )
+            payment_currency = _currency_from_text(currency_cell, report_currency)
+            fx = 1.0
+            if payment_currency != report_currency:
+                fx_column = columns.get("fx")
+                fx_cell = (
+                    row[fx_column]
+                    if fx_column is not None and fx_column < len(row)
+                    else ""
+                )
+                fx = _value_from_cell(fx_cell) or 0.0
+                if not fx:
+                    skipped_fx += 1
+                    continue
+            converted = amount * fx
+            turnover += converted
+            rate = None
+            if "rate" in columns and columns["rate"] < len(row):
+                rate = _value_from_cell(row[columns["rate"]])
+            if rate is not None:
+                share += converted * rate
+            group["turnover"] = round(float(group["turnover"]) + converted, 2)
+            if rate is not None:
+                group["reported_share"] = round(
+                    float(group["reported_share"]) + converted * rate, 2
+                )
+            used_rows += 1
+
+        if not location_ids:
+            continue
+        notes = ["recommended_template"]
+        if skipped_fx:
+            notes.append("rows_missing_fx")
+        if not used_rows:
+            notes.append("turnover_not_found")
+        application_breakdown = []
+        if ("application" in columns or "application_id" in columns) and application_groups:
+            notes.append("application_column")
+            if "__unassigned__" in application_groups:
+                notes.append("application_not_identified")
+            for group in application_groups.values():
+                application_breakdown.append(
+                    {
+                        **group,
+                        "location_ids": _unique(group["location_ids"]),
+                    }
+                )
+        return ParsedPartnerReport(
+            turnover=round(turnover, 2) if used_rows else None,
+            currency=report_currency,
+            reported_share=round(share, 2) if share else None,
+            location_ids=_unique(location_ids),
+            location_source="recommended_template",
+            notes=notes,
+            application_breakdown=application_breakdown,
+        )
+    return None
+
+
+def _structured_application_report(
+    path: Path,
+    rate: float | None,
+    default_currency: str | None,
+    period: str | None,
+) -> ParsedPartnerReport | None:
+    """Read a simple one-row-per-application/location CSV or workbook."""
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        return None
+    try:
+        rows = _rows_from_file(path, period)
+    except Exception:
+        return None
+    columns: dict[str, int] = {}
+    header_index = None
+    for index, row in enumerate(rows[:20]):
+        for column, cell in enumerate(row):
+            folded = " ".join(cell.split()).casefold()
+            if _is_application_id_header(cell):
+                columns["application_id"] = column
+            elif _is_application_header(cell):
+                columns["application"] = column
+            if _is_location_header(cell):
+                columns["location"] = column
+            if any(hint in folded for hint in TURNOVER_HINTS) and not any(
+                hint in folded for hint in SHARE_HINTS
+            ):
+                columns["amount"] = column
+            if "currency" in folded or "валют" in folded:
+                columns["currency"] = column
+            if any(hint in folded for hint in SHARE_HINTS):
+                columns["share"] = column
+        if {"location", "amount"} <= columns.keys() and (
+            "application" in columns or "application_id" in columns
+        ):
+            header_index = index
+            break
+    if header_index is None:
+        return None
+
+    groups: dict[str, dict[str, object]] = {}
+    location_ids: list[str] = []
+    currencies: set[str] = set()
+    total_share = 0.0
+    turnover = 0.0
+    for row in rows[header_index + 1 :]:
+        if _is_total_line(" ".join(row)):
+            continue
+        if columns["location"] >= len(row):
+            continue
+        location_match = LOCATION_COLUMN_ID_RE.search(
+            _plain_id_cell(row[columns["location"]])
+        )
+        if not location_match:
+            continue
+        location_id = location_match.group(1)
+        application_ref = ""
+        for application_column in ("application_id", "application"):
+            if application_column in columns and columns[application_column] < len(row):
+                application_ref = row[columns[application_column]].strip()
+                if application_ref:
+                    break
+        group_key = application_ref or "__unassigned__"
+        currency = default_currency or "USD"
+        if "currency" in columns and columns["currency"] < len(row):
+            currency = _currency_from_text(row[columns["currency"]], currency) or currency
+        amount = _signed_value_from_cell(
+            row[columns["amount"]] if columns["amount"] < len(row) else ""
+        )
+        group = groups.setdefault(
+            group_key,
+            {
+                "application_ref": application_ref,
+                "turnover": 0.0,
+                "reported_share": 0.0,
+                "currency": currency,
+                "location_ids": [],
+            },
+        )
+        group["location_ids"].append(location_id)
+        location_ids.append(location_id)
+        if amount is None:
+            continue
+        currencies.add(currency)
+        group["turnover"] = round(float(group["turnover"]) + amount, 2)
+        turnover += amount
+        share = None
+        if "share" in columns and columns["share"] < len(row):
+            share = _signed_value_from_cell(row[columns["share"]])
+        if share is None and rate is not None:
+            share = amount * rate
+        if share is not None:
+            group["reported_share"] = round(float(group["reported_share"]) + share, 2)
+            total_share += share
+
+    if not groups:
+        return None
+    notes = ["application_column"]
+    if "__unassigned__" in groups:
+        notes.append("application_not_identified")
+    if len(currencies) > 1:
+        notes.append("multiple_currencies")
+    report_currency = next(iter(currencies), default_currency)
+    return ParsedPartnerReport(
+        turnover=round(turnover, 2),
+        currency=report_currency,
+        reported_share=round(total_share, 2) if total_share else None,
+        location_ids=_unique(location_ids),
+        location_source="application_table",
+        notes=notes,
+        application_breakdown=[
+            {**group, "location_ids": _unique(group["location_ids"])}
+            for group in groups.values()
+        ],
+    )
+
+
+REPORT_REASON_KEYS = {
+    "no_payment",
+    "free_trial",
+    "pay_next_month",
+    "disconnected_before_month",
+    "connected_after_month",
+    "file_error",
+    "other",
+}
+
+
+def _report_column(rows: list[list[str]], names: tuple[str, ...]) -> tuple[int, int] | None:
+    for row_index, row in enumerate(rows[:20]):
+        for column, cell in enumerate(row):
+            folded = " ".join(cell.split()).casefold().strip(" :#")
+            if any(name in folded for name in names):
+                return row_index, column
+    return None
+
+
+def _normalise_payment_status(raw: str) -> tuple[str, str, str]:
+    value = " ".join((raw or "").split()).strip()
+    folded = value.casefold()
+    if not value:
+        return "", "", ""
+    aliases = {
+        "paid": "paid",
+        "оплата получена": "paid",
+        "есть оплата": "paid",
+        "payment received": "paid",
+        "no_payment": "no_payment",
+        "нет оплаты": "no_payment",
+        "оплаты нет": "no_payment",
+        "не платит за приложение": "no_payment",
+        "none pay for the app": "no_payment",
+        "trial": "trial",
+        "триал": "trial",
+        "тестовый период": "trial",
+        "free_trial": "free_trial",
+        "бесплатный период": "free_trial",
+        "бесплатный месяц": "free_trial",
+        "free period": "free_trial",
+        "free_month": "free_trial",
+        "pay_next_month": "pay_next_month",
+        "оплата в следующем месяце": "pay_next_month",
+        "платит в следующем месяце": "pay_next_month",
+        "disconnected_before_month": "disconnected_before_month",
+        "салон закрыт": "disconnected_before_month",
+        "салон отключён": "disconnected_before_month",
+        "салон отключен": "disconnected_before_month",
+        "connected_after_month": "connected_after_month",
+        "подключён после месяца": "connected_after_month",
+        "подключен после месяца": "connected_after_month",
+        "file_error": "file_error",
+        "ошибка в отчёте": "file_error",
+        "ошибка в отчете": "file_error",
+        "ошибка в файле": "file_error",
+        "other": "other",
+        "другое": "other",
+    }
+    if folded in aliases:
+        status = aliases[folded]
+        reason = {
+            "trial": "free_trial",
+            "free_trial": "free_trial",
+            "pay_next_month": "pay_next_month",
+            "disconnected_before_month": "disconnected_before_month",
+            "connected_after_month": "connected_after_month",
+            "file_error": "file_error",
+            "other": "other",
+            "no_payment": "no_payment",
+        }.get(status, "")
+        return status, reason, ""
+    if folded.startswith("другое:") or folded.startswith("other:"):
+        return "other", "other", value.split(":", 1)[1].strip()
+    # A free-text value is treated as “Other” and retained as its detail.
+    return "other", "other", value
+
+
+def _normalise_report_reason(raw: str) -> tuple[str, str]:
+    """Backward-compatible reason parser for older files with a Reason column."""
+    _status, reason, detail = _normalise_payment_status(raw)
+    return reason, detail
+
+
+def _report_annotations(
+    path: Path, period: str | None
+) -> tuple[
+    list[str],
+    set[str] | None,
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    bool,
+]:
+    """Read participation and explanation columns from a completed full report."""
+    try:
+        rows = _rows_from_file(path, period)
+    except Exception:
+        return [], None, {}, {}, {}, {}, False
+    location_header = _report_column(rows, ("location id", "location_id", "id филиала", "altegio id"))
+    reason_header = _report_column(rows, ("reason", "причина", "почему"))
+    status_header = _report_column(rows, ("payment status", "статус оплаты", "статус платежа", "status"))
+    comment_header = _report_column(rows, ("comment", "комментарий", "details", "подробности"))
+    participation_header = _report_column(
+        rows,
+        ("included in calculation", "included", "participates", "участвует", "в расчёте", "в расчете"),
+    )
+    if not location_header:
+        return [], None, {}, {}, {}, {}, False
+    header_index, location_column = location_header
+    participation_column = (
+        participation_header[1]
+        if participation_header and participation_header[0] == header_index
+        else None
+    )
+    reason_column = reason_header[1] if reason_header and reason_header[0] == header_index else None
+    status_column = status_header[1] if status_header and status_header[0] == header_index else None
+    comment_column = comment_header[1] if comment_header and comment_header[0] == header_index else None
+    all_ids: list[str] = []
+    included: set[str] = set()
+    reasons: dict[str, str] = {}
+    details: dict[str, str] = {}
+    statuses: dict[str, str] = {}
+    status_details: dict[str, str] = {}
+    for row in rows[header_index + 1 :]:
+        if location_column >= len(row):
+            continue
+        match = LOCATION_COLUMN_ID_RE.search(_plain_id_cell(row[location_column]))
+        if not match or _is_total_line(" ".join(row)):
+            continue
+        location_id = match.group(1)
+        all_ids.append(location_id)
+        participation = (
+            row[participation_column].strip().casefold()
+            if participation_column is not None and participation_column < len(row)
+            else ""
+        )
+        if participation in {"да", "yes", "y", "1", "true", "включить", "участвует"}:
+            included.add(location_id)
+        raw_status = row[status_column] if status_column is not None and status_column < len(row) else ""
+        if not raw_status and reason_column is not None and reason_column < len(row):
+            raw_status = row[reason_column]
+        status, reason, detail = _normalise_payment_status(raw_status)
+        if status:
+            statuses[location_id] = status
+        raw_comment = row[comment_column] if comment_column is not None and comment_column < len(row) else ""
+        if raw_comment.strip():
+            status_details[location_id] = raw_comment.strip()
+        elif detail:
+            status_details[location_id] = detail
+        if reason:
+            reasons[location_id] = reason
+            if detail:
+                details[location_id] = detail
+    return (
+        _unique(all_ids),
+        included if participation_column is not None else None,
+        reasons,
+        details,
+        statuses,
+        status_details,
+        status_column is not None,
+    )
+
+
+def _apply_report_annotations(
+    parsed: ParsedPartnerReport, path: Path, period: str | None
+) -> ParsedPartnerReport:
+    all_ids, included, reasons, details, statuses, status_details, has_status_column = _report_annotations(
+        path, period
+    )
+    if included is not None:
+        parsed.location_ids = [location_id for location_id in parsed.location_ids if location_id in included]
+        # Rows without an amount are still valid rows in the full report.
+        if not parsed.location_ids:
+            parsed.location_ids = sorted(included)
+        parsed.notes.append("participation_column")
+    elif has_status_column:
+        # In the compact partner format every row is an application/location pair.
+        # Rows with a real payment are the rows included in the payout calculation;
+        # rows with another status remain in the full register for reconciliation.
+        parsed.location_ids = [
+            location_id for location_id in all_ids if statuses.get(location_id) == "paid"
+        ]
+    if has_status_column:
+        parsed.notes.append("payment_status_column")
+    parsed.all_location_ids = all_ids or list(parsed.location_ids)
+    parsed.report_reasons = reasons
+    parsed.report_reason_details = details
+    parsed.report_payment_statuses = statuses
+    parsed.report_status_details = status_details
+    return parsed
+
+
+def parse_partner_report(
+    path: Path,
+    rate: float | None = None,
+    default_currency: str | None = None,
+    period: str | None = None,
+) -> ParsedPartnerReport:
+    standard = _standard_partner_workbook(path, period)
+    if standard is not None:
+        if standard.reported_share is None and standard.turnover is not None and rate is not None:
+            standard.reported_share = round(standard.turnover * rate, 2)
+            standard.notes.append("share_calculated")
+        return _apply_report_annotations(standard, path, period)
+    structured = _structured_application_report(
+        path, rate=rate, default_currency=default_currency, period=period
+    )
+    if structured is not None:
+        return _apply_report_annotations(structured, path, period)
+    rows = _rows_from_file(path, period)
+    text = "\n".join(" ".join(row) for row in rows)
+    location_ids, location_source = location_ids_from_file(path, period)
+    notes: list[str] = []
+
+    turnover, reported_share = _total_line_values(rows)
+    if turnover is None:
+        turnover = _labeled_value(rows, TURNOVER_HINTS) or _column_total(
+            rows, TURNOVER_HINTS
+        )
+    if reported_share is None:
+        reported_share = _labeled_value(rows, SHARE_HINTS) or _column_total(
+            rows, SHARE_HINTS
+        )
+    if turnover is None:
+        notes.append("turnover_not_found")
+    if reported_share is None and turnover is not None and rate is not None:
+        reported_share = round(turnover * rate, 2)
+        notes.append("share_calculated")
+    if not location_ids:
+        notes.append("locations_not_found")
+    currency = _currency_from_text(text, default_currency)
+    parsed = ParsedPartnerReport(
+        turnover=turnover,
+        currency=currency,
+        reported_share=reported_share,
+        location_ids=location_ids,
+        location_source=location_source,
+        notes=notes,
+    )
+    return _apply_report_annotations(parsed, path, period)
+
+
+def amounts_from_text(text: str, default_currency: str | None = None) -> list[AmountCandidate]:
+    found: list[AmountCandidate] = []
+    currency_global = None
+    currency_match = CURRENCY_RE.search(text or "")
+    if currency_match:
+        currency_global = currency_match.group(1).upper()
+    for match in MONEY_RE.finditer(text or ""):
+        raw = match.group("amount")
+        value = _parse_amount(raw)
+        if value is None:
+            continue
+        start = max(0, match.start() - 40)
+        label = " ".join((text or "")[start : match.start()].split())
+        confidence = "medium" if any(h in label.casefold() for h in TOTAL_HINTS) else "low"
+        if value < 1:
+            continue
+        found.append(
+            AmountCandidate(
+                amount=value,
+                raw=raw,
+                currency=(currency_global or default_currency),
+                label=label,
+                confidence=confidence,
+            )
+        )
+    hinted = [c for c in found if c.confidence == "medium"]
+    return hinted or found
+
+
+def extract_plain(path: Path) -> ExtractedReport:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=path.stem,
+        candidates=amounts_from_text(text),
+    )
+
+
+def extract_csv(path: Path) -> ExtractedReport:
+    rows: list[str] = []
+    with path.open(newline="", encoding="utf-8", errors="ignore") as handle:
+        for row in csv.reader(handle):
+            rows.append(" ".join(row))
+    text = "\n".join(rows)
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=path.stem,
+        candidates=amounts_from_text(text),
+    )
+
+
+def extract_xlsx(path: Path) -> ExtractedReport:
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    notes: list[str] = []
+    candidates: list[AmountCandidate] = []
+    partner_hint = path.stem
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows(values_only=True):
+            cells = ["" if cell is None else str(cell) for cell in row]
+            line = " ".join(cells)
+            if not line.strip():
+                continue
+            for candidate in amounts_from_text(line):
+                candidate.label = f"{sheet.title}: {candidate.label or line[:80]}"
+                candidates.append(candidate)
+    hinted = [c for c in candidates if c.confidence == "medium"]
+    picked = hinted or candidates
+    if len(picked) > 8:
+        notes.append(f"{len(picked)} numeric candidates; showing hinted totals first")
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=partner_hint,
+        candidates=picked[:12],
+        notes=notes,
+    )
+
+
+def extract_xls(path: Path) -> ExtractedReport:
+    rows = _rows_from_file(path)
+    text = "\n".join(" ".join(row) for row in rows)
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=path.stem,
+        candidates=amounts_from_text(text),
+        notes=["legacy_xls"],
+    )
+
+
+def extract_pdf(path: Path) -> ExtractedReport:
+    reader = PdfReader(str(path))
+    text = "\n".join((page.extract_text() or "") for page in reader.pages)
+    notes = []
+    if not text.strip():
+        notes.append("PDF has no extractable text; request Excel or a screenshot from the partner")
+    return ExtractedReport(
+        source=str(path),
+        partner_hint=path.stem,
+        candidates=amounts_from_text(text),
+        notes=notes,
+        error="empty pdf text" if not text.strip() else None,
+    )
+
+
+EXTRACTORS = {
+    ".txt": extract_plain,
+    ".md": extract_plain,
+    ".csv": extract_csv,
+    ".xlsx": extract_xlsx,
+    ".xlsm": extract_xlsx,
+    ".xls": extract_xls,
+    ".pdf": extract_pdf,
+}
+
+
+def extract_file(path: Path) -> ExtractedReport:
+    suffix = path.suffix.lower()
+    extractor = EXTRACTORS.get(suffix)
+    if extractor is None:
+        return ExtractedReport(
+            source=str(path),
+            partner_hint=path.stem,
+            error=f"unsupported type {suffix}",
+            notes=["Forward as-is for manual review; screenshots are read in chat, not by this CLI"],
+        )
+    try:
+        return extractor(path)
+    except Exception as exc:  # noqa: BLE001 — intake must not crash the month run
+        return ExtractedReport(
+            source=str(path),
+            partner_hint=path.stem,
+            error=str(exc),
+        )
+
+
+LOCATION_HEADER_NAMES = {
+    "id",
+    "ids",
+    "location",
+    "locations",
+    "location id",
+    "location_id",
+    "salon",
+    "salon id",
+    "salon_id",
+    "branch",
+    "branch id",
+    "id altegio",
+    "altegio id",
+    "филиал",
+    "id филиала",
+    "локация",
+    "точка",
+    "заклад",
+}
+LOCATION_HEADER_PHRASES = (
+    "location id",
+    "location_id",
+    "salon id",
+    "salon_id",
+    "id altegio",
+    "altegio id",
+    "id филиала",
+)
+APPLICATION_HEADER_NAMES = {
+    "app",
+    "application",
+    "application url",
+    "integration",
+    "приложение",
+    "интеграция",
+}
+APPLICATION_HEADER_PHRASES = (
+    "application url",
+    "приложение",
+    "интеграц",
+)
+APPLICATION_ID_HEADER_NAMES = {
+    "app id",
+    "application id",
+    "приложение id",
+    "id приложения",
+}
+APPLICATION_ID_HEADER_PHRASES = (
+    "application id",
+    "app id",
+    "приложение id",
+    "id приложения",
+)
+TOTAL_LABELS = ("total", "totals", "итого", "всего", "разом")
+LOCATION_ID_RE = re.compile(r"(?<![\d.,])(\d{4,8})(?:-alt)?(?![\d.,])", re.I)
+LOCATION_COLUMN_ID_RE = re.compile(r"(?<![\d.,])(\d{2,12})(?:-alt)?(?![\d.,])", re.I)
+FLOAT_ID_RE = re.compile(r"^\s*(\d+)[.,]0+\s*$")
+
+
+def _plain_id_cell(cell: str) -> str:
+    """Spreadsheets often store Location IDs as floats, so 1295757.0 is one id."""
+    match = FLOAT_ID_RE.match(cell or "")
+    return match.group(1) if match else (cell or "")
+
+
+def _is_location_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 40:
+        return False
+    if folded in LOCATION_HEADER_NAMES:
+        return True
+    return any(phrase in folded for phrase in LOCATION_HEADER_PHRASES)
+
+
+def _is_application_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 60:
+        return False
+    if folded in APPLICATION_HEADER_NAMES:
+        return True
+    return any(phrase in folded for phrase in APPLICATION_HEADER_PHRASES)
+
+
+def _is_application_id_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 60:
+        return False
+    if folded in APPLICATION_ID_HEADER_NAMES:
+        return True
+    return any(phrase in folded for phrase in APPLICATION_ID_HEADER_PHRASES)
+
+
+def _is_total_line(text: str) -> bool:
+    folded = text.casefold()
+    return any(label in folded for label in TOTAL_LABELS)
+
+
+def _is_tabular(rows: list[list[str]]) -> bool:
+    return any(len([cell for cell in row if cell.strip()]) > 1 for row in rows)
+
+
+def period_sheet_titles(period: str | None) -> set[str]:
+    """Titles that can name the reporting month, so one month is read at a time."""
+    checked = valid_period(period or "")
+    if not checked:
+        return set()
+    year, month = checked.split("-")
+    titles = {
+        checked,
+        f"{month}.{year}",
+        f"{month}/{year}",
+        f"{int(month)}.{year}",
+        f"{year}/{month}",
+    }
+    from revshare.i18n import TRANSLATIONS
+
+    for language in TRANSLATIONS.values():
+        name = language.get(f"month_{month}")
+        if name:
+            titles.add(f"{name} {year}")
+            titles.add(f"{name[:3]} {year}")
+    return {title.casefold() for title in titles}
+
+
+def _sheet_rows(sheet) -> list[list[str]]:
+    return [
+        ["" if cell is None else str(cell) for cell in row]
+        for row in sheet.iter_rows(values_only=True)
+    ]
+
+
+def _rows_from_file(path: Path, period: str | None = None) -> list[list[str]]:
+    suffix = path.suffix.lower()
+    if suffix == ".xls":
+        import xlrd
+
+        workbook = xlrd.open_workbook(path, on_demand=True)
+        return [
+            ["" if cell.value is None else str(cell.value) for cell in row]
+            for sheet in workbook.sheets()
+            for row in sheet.get_rows()
+        ]
+    if suffix in {".xlsx", ".xlsm"}:
+        workbook = load_workbook(path, data_only=True, read_only=True)
+        wanted = period_sheet_titles(period)
+        if wanted:
+            for sheet in workbook.worksheets:
+                if " ".join(sheet.title.split()).casefold() in wanted:
+                    return _sheet_rows(sheet)
+        rows: list[list[str]] = []
+        for sheet in workbook.worksheets:
+            rows.extend(_sheet_rows(sheet))
+        return rows
+    if suffix == ".csv":
+        with path.open(newline="", encoding="utf-8", errors="ignore") as handle:
+            sample = handle.read(4096)
+            handle.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel
+            return [list(row) for row in csv.reader(handle, dialect)]
+    if suffix == ".pdf":
+        reader = PdfReader(str(path))
+        text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        return [[line] for line in text.splitlines()]
+    return [[line] for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()]
+
+
+def location_ids_from_file(
+    path: Path, period: str | None = None
+) -> tuple[list[str], str]:
+    """Read the client registry out of a partner file.
+
+    Returns the ids and how they were found, so the submission can tell the
+    partner whether their own file was understood.
+    """
+    try:
+        rows = _rows_from_file(path, period)
+    except Exception:  # noqa: BLE001 — a broken upload must not lose the report
+        return [], "unreadable"
+
+    if _is_tabular(rows):
+        for index, row in enumerate(rows[:10]):
+            for column, cell in enumerate(row):
+                if not _is_location_header(cell):
+                    continue
+                found: list[str] = []
+                for data_row in rows[index + 1 :]:
+                    if column >= len(data_row):
+                        continue
+                    if _is_total_line(" ".join(data_row)):
+                        continue
+                    match = LOCATION_COLUMN_ID_RE.search(
+                        _plain_id_cell(data_row[column])
+                    )
+                    if match:
+                        found.append(match.group(1))
+                if found:
+                    return _unique(found), "column"
+
+    scanned: list[str] = []
+    for row in rows:
+        line = " ".join(row)
+        if _is_total_line(line):
+            continue
+        match = LOCATION_ID_RE.search(line)
+        if match:
+            scanned.append(match.group(1))
+    return (_unique(scanned), "scan") if scanned else ([], "not_found")
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def ingest_dir(folder: Path) -> list[ExtractedReport]:
+    files = sorted(
+        p
+        for p in folder.iterdir()
+        if p.is_file() and p.name not in {".gitkeep", "README.md"} and not p.name.startswith(".")
+    )
+    return [extract_file(path) for path in files]

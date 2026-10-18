@@ -1,0 +1,11 @@
+{% macro period_select(id, name, selected, options, t, attrs="") %}
+<select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>
+  {% for value in options %}
+  <option value="{{ value }}" {% if value == selected %}selected{% endif %}>{{ t("month_" + value[5:7]) }} {{ value[:4] }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}
+
+{% macro csrf_field(token) %}
+<input type="hidden" name="csrf_token" value="{{ token }}">
+{% endmacro %}

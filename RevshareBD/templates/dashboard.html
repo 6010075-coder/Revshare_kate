@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% from "_macros.html" import period_select %}
+{% block title %}{{ t("dashboard") }} · {{ t("app_name") }}{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">{{ t("reporting_period") }}</p>
+    <h1>{{ t("revshare_control") }}</h1>
+    <p>{{ t("dashboard_intro") }}</p>
+  </div>
+  <form class="period-form" method="get">
+    <label for="period">{{ t("month") }}</label>
+    <div class="inline">
+      {{ period_select("period", "period", period, period_options, t) }}
+      <button type="submit" class="button secondary">{{ t("show") }}</button>
+    </div>
+  </form>
+</section>
+
+<section class="stats">
+  <article class="money">
+    <strong>{{ "{:,.2f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>
+    <span>{{ t("revshare_verified") }}</span>
+    <small>{{ t("partners_with_reports", count=verified_group.count) }}{% if verified_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
+  </article>
+  <article class="money">
+    <strong>{{ "{:,.2f}".format(review_group.amount).replace(",", " ") }} {{ review_group.currency }}</strong>
+    <span>{{ t("revshare_in_review") }}</span>
+    <small>{{ t("partners_with_reports", count=review_group.count) }}{% if review_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
+  </article>
+  <article><strong>{{ counts.submitted }} / {{ counts.total }}</strong><span>{{ t("submitted_count") }}</span></article>
+  <article><strong>{{ counts.missing }}</strong><span>{{ t("missing_count") }}</span></article>
+</section>
+
+<section class="section-head">
+  <div>
+    <h2>{{ t("partners_title") }}</h2>
+  </div>
+  <a class="button secondary" href="/export/{{ period }}.csv?{{ export_query }}">{{ t("download_csv") }}</a>
+</section>
+
+<form method="get" class="table-form dashboard-form">
+<input type="hidden" name="period" value="{{ period }}">
+<input type="hidden" name="sort" value="{{ sort }}">
+<input type="hidden" name="dir" value="{{ direction }}">
+<div class="dashboard-toolbar">
+  <div class="dashboard-filters">
+    <label class="sr-only" for="filter-query">{{ t("filter_search") }}</label>
+    <input id="filter-query" name="q" type="search" value="{{ filters.q }}" placeholder="{{ t('filter_search_placeholder_short') }}" data-search-submit>
+    <label class="sr-only" for="filter-status">{{ t("filter_status") }}</label>
+    <select id="filter-status" name="status" data-auto-submit>
+      {% for value in dashboard_statuses %}
+      <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ t("filter_status_" + value) }}</option>
+      {% endfor %}
+    </select>
+    <label class="sr-only" for="filter-risk">{{ t("filter_risk") }}</label>
+    <select id="filter-risk" name="risk" data-auto-submit>
+      {% for value in dashboard_risks %}
+      <option value="{{ value }}" {% if filters.risk == value %}selected{% endif %}>{{ t("filter_risk_" + value) }}</option>
+      {% endfor %}
+    </select>
+    {% if filters_active %}
+    <a class="text-link" href="/?period={{ period }}">{{ t("reset_filters") }}</a>
+    {% endif %}
+  </div>
+  <p class="filter-summary">
+    {{ t("shown_partners", shown=items|length, total=total_items) }}
+    {% if revshare_currencies|length > 1 %}
+    · {{ t("revshare_mixed_currencies") }}
+    {% endif %}
+  </p>
+</div>
+<div class="table-card">
+  <table>
+    <thead>
+      <tr>
+        {% set columns = [
+          ("name", t("partner")),
+          ("status", t("status")),
+          ("turnover", t("turnover")),
+          ("share", "Revshare"),
+          ("clients", t("clients")),
+          ("active", "Altegio"),
+          ("risk", t("risk")),
+        ] %}
+        {% for key, label in columns %}
+        <th class="sortable {{ 'sorted' if sort_links[key].active else '' }}">
+          <a href="{{ sort_links[key].url }}" title="{{ t('sort_hint') }}">
+            {{ label }}
+            <span class="sort-arrow">{% if sort_links[key].active %}{{ "↓" if sort_links[key].direction == "desc" else "↑" }}{% endif %}</span>
+          </a>
+        </th>
+        {% endfor %}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for item in items %}
+      <tr>
+        <td>
+          <strong>{{ item.name }}</strong>
+          <small>{{ t("category_" + item.category) if item.category else t("category_not_set") }}</small>
+          <small>{{ item.telegram or item.email or t("contact_missing") }}</small>
+        </td>
+        <td>
+          {% if item.report_id %}
+            <span class="status {{ 'green' if item.display_status == 'checked' else 'yellow' if item.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+              {{ t("report_status_" + item.display_status) }}
+            </span>
+            {% if item.workflow_status in ['approved', 'posted'] %}<small>{{ t("workflow_" + item.workflow_status) }}</small>{% endif %}
+          {% else %}
+            <span class="status muted">{{ t("not_submitted") }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if item.report_id %}
+            <strong>{{ "{:,.2f}".format(item.turnover).replace(",", " ") }} {{ item.report_currency }}</strong>
+            {% if item.report_currency != "USD" %}
+            <small>{% if item.turnover_usd is not none %}≈ {{ "{:,.2f}".format(item.turnover_usd).replace(",", " ") }} USD{% else %}{{ t("usd_rate_missing") }}{% endif %}</small>
+            {% endif %}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if item.expected_share is defined and item.expected_share is not none %}
+            <strong>{{ "{:,.2f}".format(item.expected_share).replace(",", " ") }} {{ item.report_currency }}</strong>
+            {% if item.report_currency != "USD" and item.share_usd is not none %}
+            <small>≈ {{ "{:,.2f}".format(item.share_usd).replace(",", " ") }} USD</small>
+            {% endif %}
+            {% if item.rate is not none %}<small>{{ (item.rate * 100)|round(2) }}%{% if item.reported_share is not none and (item.reported_share - item.expected_share)|abs >= 0.01 %} · {{ t("partner_due") }}: {{ "{:,.2f}".format(item.reported_share).replace(",", " ") }}{% endif %}</small>{% endif %}
+          {% elif item.report_id %}
+            <span>—</span>
+            <small>{{ t("rate_missing") }}</small>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ item.client_count if item.report_id else "—" }}</td>
+        <td>
+          <span>{{ item.active_count }} {{ t("active") }}</span>
+          <small>{{ item.connected_count }} {{ t("connected") }}</small>
+        </td>
+        <td>
+          {% if item.report_id %}
+            <strong class="risk {{ item.risk_level }}">{{ item.risk_score }}/100</strong>
+          {% else %}—{% endif %}
+        </td>
+        <td class="actions">
+          {% if item.report_id %}
+            <a href="/reports/{{ item.report_id }}">{{ t("open") }}</a>
+          {% else %}
+            <a href="/submit/{{ item.token }}?period={{ period }}">{{ t("form_link") }}</a>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+    {% if items %}
+    <tfoot>
+      <tr class="totals-row">
+        <th>{{ t("grand_total") }}</th>
+        <td><small>{{ t("reports_counted", count=counts_reported) }}</small></td>
+        <td>
+          {% if revshare_currencies|length == 1 %}
+            <strong>{{ "{:,.2f}".format(turnover_total).replace(",", " ") }} {{ revshare_currencies[0] }}</strong>
+            {% if revshare_currencies[0] != "USD" %}<small>≈ {{ "{:,.2f}".format(turnover_usd_total).replace(",", " ") }} USD</small>{% endif %}
+          {% elif revshare_currencies %}
+            <strong>≈ {{ "{:,.2f}".format(turnover_usd_total).replace(",", " ") }} USD</strong>
+            <small>{{ t("converted_total_hint") }}</small>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if revshare_currencies|length == 1 %}
+            <strong>{{ "{:,.2f}".format(revshare_total).replace(",", " ") }} {{ revshare_currencies[0] }}</strong>
+            {% if revshare_currencies[0] != "USD" %}<small>≈ {{ "{:,.2f}".format(revshare_usd_total).replace(",", " ") }} USD</small>{% endif %}
+          {% elif revshare_currencies %}
+            <strong>≈ {{ "{:,.2f}".format(revshare_usd_total).replace(",", " ") }} USD</strong>
+            <small>{{ t("converted_total_hint") }}</small>
+          {% else %}—{% endif %}
+        </td>
+        <td><strong>{{ clients_total }}</strong></td>
+        <td>
+          <span>{{ active_total }} {{ t("active") }}</span>
+          <small>{{ connected_total }} {{ t("connected") }}</small>
+        </td>
+        <td>—</td>
+        <td></td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+</div>
+</form>
+{% if not items %}
+<div class="empty">
+  {% if total_items %}
+  <h3>{{ t("no_partners_for_filter") }}</h3>
+  <p>{{ t("no_partners_for_filter_hint") }}</p>
+  <a class="button secondary" href="/?period={{ period }}">{{ t("reset_filters") }}</a>
+  {% else %}
+  <h3>{{ t("no_partners") }}</h3>
+  <p>{{ t("no_partners_hint") }}</p>
+  <a class="button" href="/admin/partners">{{ t("add_partner") }}</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% from "_macros.html" import period_select %}
+{% from "_macros.html" import csrf_field %}
+{% block title %}{{ t("settings") }} · {{ t("app_name") }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <p class="eyebrow">{{ t("settings") }}</p>
+    <h1>{{ t("settings") }}</h1>
+    <p>{{ t("settings_intro") }}</p>
+  </div>
+</section>
+
+{% if saved %}<div class="notice neutral">{{ t("settings_saved") }}</div>{% endif %}
+
+<nav class="settings-nav">
+  <a href="#general">{{ t("settings_general") }}</a>
+  <a href="#altegio">{{ t("altegio_data") }}</a>
+  <a href="#telegram">{{ t("telegram_delivery") }}</a>
+  <a href="#schedule">{{ t("notice_schedule") }}</a>
+  <a href="#notices">{{ t("notice_texts") }}</a>
+  <a href="#rates">{{ t("usd_rates") }}</a>
+</nav>
+
+<form method="post" action="/admin/settings/general" class="card wide-form" id="general">
+{{ csrf_field(csrf_token) }}
+  <h2>{{ t("settings_general") }}</h2>
+  <p class="hint">{{ t("settings_general_hint") }}</p>
+  <div class="field">
+    <label for="public_base_url">{{ t("public_url") }}</label>
+    <input id="public_base_url" name="public_base_url" type="url" value="{{ public_form_url }}" placeholder="https://">
+    <small>{{ t("public_url_hint") }}</small>
+  </div>
+  <label class="check-row">
+    <input type="checkbox" name="notice_scheduler_enabled" value="on" {% if notice_scheduler_enabled %}checked{% endif %}>
+    <span>{{ t("notice_scheduler") }}</span>
+  </label>
+  <p class="hint">{{ t("notice_scheduler_hint") }}</p>
+  <div class="form-actions">
+    <button class="button" type="submit">{{ t("save_changes") }}</button>
+  </div>
+</form>
+
+<section class="card wide-form" id="altegio">
+  <h2>{{ t("altegio_data") }}</h2>
+  <p class="hint">{{ t("settings_altegio_intro") }}</p>
+  <p class="hint">{{ t("timezone_note") }}</p>
+
+  <section class="how-check compact-how-check">
+    <h3>{{ t("how_check_works") }}</h3>
+    <ol>
+      <li>{{ t("how_check_step_snapshot") }}</li>
+      <li>{{ t("how_check_step_report") }}</li>
+      <li>{{ t("how_check_step_compare") }}</li>
+      <li>{{ t("how_check_step_claims") }}</li>
+      <li>{{ t("how_check_step_status") }}</li>
+    </ol>
+    <p class="hint">{{ t("how_check_note") }}</p>
+  </section>
+
+  <form method="post" action="/admin/settings/altegio" class="altegio-threshold-form">
+    {{ csrf_field(csrf_token) }}
+    <input type="hidden" name="period" value="{{ altegio_period }}">
+    <div class="field compact">
+      <label for="idle_months_threshold">{{ t("idle_months_threshold") }}</label>
+      <input id="idle_months_threshold" name="idle_months_threshold" type="number" min="2" max="12" value="{{ idle_months_threshold }}">
+      <small>{{ t("idle_months_threshold_hint") }}</small>
+    </div>
+    <div class="form-actions">
+      <button class="button secondary" type="submit">{{ t("save_changes") }}</button>
+      <a class="text-link" href="/admin/usage?period={{ altegio_period }}">{{ t("open_manual_snapshot") }}</a>
+    </div>
+  </form>
+
+  <form method="post" action="/admin/settings/altegio/sync" class="altegio-sync-form">
+    {{ csrf_field(csrf_token) }}
+    <h3>{{ t("sync_from_altegio") }}</h3>
+    <p class="hint">{{ t("sync_from_altegio_hint") }}</p>
+    {% if not altegio_mysql_ready and not sync_missing %}<p class="hint">{{ t("sync_from_altegio_missing") }}</p>{% endif %}
+    {% if sync_missing %}<div class="notice warning">{{ t("sync_from_altegio_missing") }}</div>{% endif %}
+    {% if sync_error %}<div class="notice error">{{ t("sync_from_altegio_error") }}</div>{% endif %}
+    {% if sync_done %}<div class="notice neutral">{{ t("sync_from_altegio_done", synced=sync_done, skipped=sync_skipped) }}</div>{% endif %}
+    <input type="hidden" name="period" value="{{ altegio_period }}">
+    <div class="form-actions">
+      <button class="button" type="submit">{{ t("sync_from_altegio") }}</button>
+    </div>
+  </form>
+
+  <form method="post" action="/admin/settings/altegio/import" enctype="multipart/form-data" class="altegio-import-form">
+    {{ csrf_field(csrf_token) }}
+    <h3>{{ t("import_snapshot") }}</h3>
+    <p class="hint">{{ t("import_snapshot_hint") }}</p>
+    {% if import_error %}<div class="notice error">{{ t("import_snapshot_error") }}</div>{% endif %}
+    {% if import_count %}<div class="notice neutral">{{ t("import_snapshot_done", count=import_count) }}</div>{% endif %}
+    <div class="field compact-day">
+      <label for="altegio-period">{{ t("month") }}</label>
+      {{ period_select("altegio-period", "period", altegio_period, period_options, t) }}
+    </div>
+    <div class="field">
+      <label for="snapshot-file">{{ t("import_snapshot_file") }}</label>
+      <input id="snapshot-file" name="attachment" type="file" accept=".json,application/json">
+    </div>
+    <div class="form-actions">
+      <button class="button" type="submit">{{ t("import_snapshot") }}</button>
+    </div>
+    <p class="hint">{{ t("import_snapshot_api_hint") if snapshot_api_ready else t("import_snapshot_api_missing") }}</p>
+  </form>
+</section>
+
+<section class="card wide-form" id="telegram">
+  <h2>{{ t("telegram_delivery") }}</h2>
+  {% if bot_ready %}
+  <p class="hint">{{ t("telegram_delivery_intro") }}</p>
+  <form method="post" action="/admin/settings/telegram">
+    {{ csrf_field(csrf_token) }}
+    <div class="field">
+      <label for="digest_chat">{{ t("digest_chat") }}</label>
+      <input id="digest_chat" name="digest_chat" value="{{ digest_chat }}" placeholder="@username">
+      <small>{{ t("digest_chat_hint") }}</small>
+    </div>
+    {% if digest_linked and not digest_chat %}
+    <p class="hint">{{ t("digest_chat_from_bot") }}</p>
+    {% elif not digest_linked and not digest_chat %}
+    <p class="hint">{{ t("digest_chat_missing") }}</p>
+    {% endif %}
+    <p class="hint">
+      <a class="text-link" href="https://t.me/{{ bot_username }}?start=digest" target="_blank" rel="noopener">{{ t("open_digest_bot") }}</a>
+    </p>
+    <div class="form-actions">
+      <button class="button" type="submit">{{ t("save_changes") }}</button>
+    </div>
+  </form>
+  {% if not public_form_url %}
+  <p class="hint">{{ t("public_url_missing") }}</p>
+  {% endif %}
+  {% if notices_ran %}<p class="hint">{{ t("notices_ran") }}</p>{% endif %}
+  <form method="post" action="/admin/notices/run" class="form-actions">
+    {{ csrf_field(csrf_token) }}
+    <button class="button secondary" type="submit">{{ t("run_due_notices") }}</button>
+  </form>
+  {% else %}
+  <p class="hint">{{ t("telegram_bot_missing") }}</p>
+  {% endif %}
+</section>
+
+<form method="post" action="/admin/settings/schedule" class="card wide-form" id="schedule">
+{{ csrf_field(csrf_token) }}
+  <h2>{{ t("notice_schedule") }}</h2>
+  <p class="hint">{{ t("notice_schedule_intro") }}</p>
+  <div class="schedule-preview">
+    <strong>{{ t("next_schedule", period=current_period) }}</strong>
+    <div class="schedule-rows">
+      {% for notice in global_schedule.notices %}
+      <div class="schedule-row {{ 'off' if not notice.enabled else '' }}">
+        <input type="hidden" name="notice_key" value="{{ notice.key }}">
+        <label class="check-row compact">
+          <input type="checkbox" name="notice_on" value="{{ notice.key }}" {% if notice.enabled %}checked{% endif %}>
+          <span>
+            <strong>{{ t("notice_" + notice.key) }}</strong>
+            {% if notice.audience == "internal" %}<small>{{ t("internal_only") }}</small>{% endif %}
+          </span>
+        </label>
+        <div class="schedule-day">
+          <label class="sr-only" for="global-day-{{ notice.key }}">{{ t("send_on_day") }}</label>
+          <input id="global-day-{{ notice.key }}" name="notice_day" type="number" min="1" max="28" value="{{ notice.day }}" required>
+          <span>{{ schedule_dates.get(notice.key) or "—" }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="hint">{{ t("weekend_shift_note") }}</p>
+    <p class="hint">{{ t("timezone_note") }}</p>
+  </div>
+  <div class="form-actions">
+    <button class="button" type="submit">{{ t("save_changes") }}</button>
+  </div>
+</form>
+
+<form method="post" action="/admin/notices" class="card wide-form" id="notices">
+{{ csrf_field(csrf_token) }}
+  <h2>{{ t("notice_texts") }}</h2>
+  <p class="hint">{{ t("notice_texts_intro") }}</p>
+  <input type="hidden" name="language" value="{{ language }}">
+  <div class="language-tabs">
+    <label class="sr-only" for="notice-language">{{ t("notice_language") }}</label>
+    <select id="notice-language" data-jump>
+      {% for code in notice_languages %}
+      <option value="/admin/settings?language={{ code }}#notices" {% if code == language %}selected{% endif %}>{{ t("language_" + code) }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% for key in partner_notice_keys %}
+  <div class="form-section compact-section">
+    <h2>{{ t("notice_" + key) }}</h2>
+    <p class="hint">{{ t("notice_" + key + "_hint") }}</p>
+    <div class="field">
+      <label for="text-{{ key }}">{{ t("notice_text") }}</label>
+      <textarea id="text-{{ key }}" name="notice_message" rows="4">{{ templates[key] }}</textarea>
+      <small>{{ t("notice_placeholders") }}</small>
+    </div>
+    <input type="hidden" name="notice_key" value="{{ key }}">
+  </div>
+  {% endfor %}
+  <p class="hint">{{ t("notice_texts_reset_hint") }}</p>
+  <div class="form-actions">
+    <button class="button" type="submit">{{ t("save_changes") }}</button>
+  </div>
+</form>
+
+<form id="fx-period-form" method="get" action="/admin/settings" hidden>
+  <input type="hidden" name="language" value="{{ language }}">
+</form>
+<form method="post" action="/admin/rates" class="card wide-form rates-form" id="rates">
+{{ csrf_field(csrf_token) }}
+  <h2>{{ t("usd_rates") }}</h2>
+  <p class="hint">{{ t("usd_rates_hint") }}</p>
+  <div class="field compact-day">
+    <label for="fx-period">{{ t("usd_rates_period") }}</label>
+    {{ period_select("fx-period", "period", fx_info.period, period_options, t, 'form="fx-period-form" data-auto-submit') }}
+  </div>
+  {% if fx_info.overridden %}
+  <p class="hint">{{ t("usd_rates_manual", period=fx_info.period) }}</p>
+  {% elif fx_info.source == "auto" %}
+  <p class="hint">{{ t("usd_rates_auto", period=fx_info.period, days=fx_info.days) }}</p>
+  {% else %}
+  <p class="hint">{{ t("usd_rates_fallback") }}</p>
+  {% endif %}
+  <input type="hidden" name="period" value="{{ fx_info.period }}">
+  <div class="rate-grid">
+    {% for code in fx_currencies %}
+    {% if code != "USD" %}
+    <div class="field">
+      <label for="rate-{{ code }}">{{ code }}</label>
+      <input id="rate-{{ code }}" name="rate_{{ code }}" type="number" min="0" step="0.000001" value="{{ fx_rates[code] }}">
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  <div class="form-actions">
+    <button class="button" type="submit">{{ t("save_changes") }}</button>
+    <button class="button secondary" type="submit" formaction="/admin/rates/refresh">{{ t("usd_rates_refresh") }}</button>
+  </div>
+</form>
+{% endblock %}

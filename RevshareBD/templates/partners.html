@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field %}
+{% block title %}{{ t("partners") }}{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">{{ t("registry") }}</p>
+    <h1>{{ t("partners") }}</h1>
+    <p>{{ t("partners_intro") }}</p>
+  </div>
+</section>
+<div class="two-columns">
+  <section class="card">
+    <h2>{{ t("quick_add") }}</h2>
+    <p class="hint">{{ t("quick_add_hint") }}</p>
+    <form method="post">
+      {{ csrf_field(csrf_token) }}
+      <div class="field"><label>{{ t("name") }}</label><input name="name"></div>
+      <div class="field"><label>{{ t("rate_percent") }}</label><input name="rate" type="number" min="0" max="100" step="0.01"></div>
+      <div class="field"><label>{{ t("legal_name") }}</label><input name="legal_name"></div>
+      <button class="button full">{{ t("create_link") }}</button>
+    </form>
+  </section>
+  <section>
+    <h2>{{ t("active_partners") }}</h2>
+    <div class="partner-list">
+      {% for partner in partners %}
+      <article class="partner-card">
+        <div class="avatar">{{ partner.name[0] }}</div>
+        <div class="grow">
+          <strong>{{ partner.name }}</strong>
+          {% if partner.legal_name %}<span>{{ partner.legal_name }}</span>{% endif %}
+          {% for category in partner.application_categories %}
+          <span class="tag">{{ t("category_" + category) }}</span>
+          {% endfor %}
+        </div>
+        <div class="partner-meta">
+          <span>{{ (partner.rate * 100)|round(2) if partner.rate is not none else t("rate_missing") }}{% if partner.rate is not none %}%{% endif %}</span>
+          <a href="/submit/{{ partner.token }}" target="_blank">{{ t("open_form") }}</a>
+          <a href="/admin/partners/{{ partner.id }}/edit">{{ t("open_details") }}</a>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}
