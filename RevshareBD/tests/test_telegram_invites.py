@@ -758,7 +758,7 @@ def test_admin_edit_switches_channel_to_email_disables_chat(
     assert "tg_changed=1" in location
     assert "tg_unlinked=1" in location
     assert store.partner(pid)["telegram_chat_id"] == ""
-    assert store.partner(pid)["report_channel"] == "email"
+    assert store.partner(pid)["report_channel"] == "telegram"
 
 
 def test_admin_rotate_invite_endpoint(tmp_path: Path, monkeypatch):

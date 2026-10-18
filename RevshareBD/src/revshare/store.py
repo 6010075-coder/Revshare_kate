@@ -548,7 +548,7 @@ class Store:
                     contact_name TEXT NOT NULL DEFAULT '',
                     email TEXT NOT NULL DEFAULT '',
                     telegram TEXT NOT NULL DEFAULT '',
-                    report_channel TEXT NOT NULL DEFAULT 'email',
+                    report_channel TEXT NOT NULL DEFAULT 'telegram',
                     internal_comment TEXT NOT NULL DEFAULT '',
                     token TEXT NOT NULL UNIQUE,
                     rate REAL,
@@ -988,9 +988,13 @@ class Store:
                 db.execute(
                     """
                     ALTER TABLE partners
-                    ADD COLUMN report_channel TEXT NOT NULL DEFAULT 'email'
+                    ADD COLUMN report_channel TEXT NOT NULL DEFAULT 'telegram'
                     """
                 )
+            db.execute(
+                "UPDATE partners SET report_channel = 'telegram' "
+                "WHERE report_channel IS NULL OR report_channel IN ('', 'email')"
+            )
             if "notifications" not in partner_columns:
                 db.execute(
                     "ALTER TABLE partners ADD COLUMN notifications TEXT NOT NULL DEFAULT '{}'"
@@ -1042,6 +1046,18 @@ class Store:
                     detail TEXT NOT NULL DEFAULT '',
                     sent_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notice_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    partner_id INTEGER,
+                    partner_name TEXT NOT NULL DEFAULT '',
+                    period TEXT NOT NULL DEFAULT '',
+                    notice_key TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS notice_audit_created_idx ON notice_audit(created_at DESC, id DESC);
                 CREATE TABLE IF NOT EXISTS usage_imports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     partner_id INTEGER NOT NULL,
@@ -4469,6 +4485,35 @@ class Store:
             "SELECT * FROM partners WHERE id = ?", (partner_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def record_notice_audit(self, *, source: str, status: str, detail: str = "", partner_id: int | None = None, partner_name: str = "", period: str = "", notice_key: str = "") -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO notice_audit (created_at, partner_id, partner_name, period, notice_key, source, status, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now(UTC).isoformat(), partner_id, partner_name, period, notice_key, source, status, detail),
+            )
+
+    def notice_audit_entries(self, limit: int = 200) -> list[dict]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM notice_audit ORDER BY id DESC LIMIT ?", (min(max(limit, 1), 500),)).fetchall()]
+
+    def record_unconfirmed_scheduler_run(self, now: datetime | None = None) -> None:
+        from revshare.timezone import YEREVAN_TZ
+        local_now = (now or datetime.now(YEREVAN_TZ)).astimezone(YEREVAN_TZ)
+        scheduled = local_now.replace(hour=11, minute=15, second=0, microsecond=0)
+        if local_now < scheduled:
+            return
+        since = scheduled.astimezone(UTC).isoformat()
+        with self.connect() as db:
+            seen = db.execute(
+                "SELECT 1 FROM notice_audit WHERE source = 'scheduler' AND created_at >= ? LIMIT 1",
+                (since,),
+            ).fetchone()
+            if not seen:
+                db.execute(
+                    "INSERT INTO notice_audit (created_at, source, status, detail) VALUES (?, 'scheduler', 'unconfirmed', ?)",
+                    (local_now.astimezone(UTC).isoformat(), local_now.date().isoformat()),
+                )
 
     def notice_already_sent(self, partner_id: int, period: str, notice_key: str) -> bool:
         with self.connect() as db:

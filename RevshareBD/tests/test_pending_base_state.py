@@ -79,7 +79,7 @@ def _parse_registry(
 
 def test_review_screen_without_base_shows_waiting_branch(tmp_path: Path) -> None:
     """No base → "Waiting for reconciliation base" branch, no Confirm button."""
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
 
@@ -121,7 +121,7 @@ def test_review_screen_without_base_shows_waiting_branch(tmp_path: Path) -> None
 
 def test_review_screen_with_base_shows_confirm_button(tmp_path: Path) -> None:
     """Base present → review screen renders the assess result + Confirm."""
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")

@@ -51,14 +51,9 @@ REVSHARE_SECRET_KEY=local-secret-not-for-prod
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456:abcdef...           # от @BotFather
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=...
-SMTP_PASSWORD=...
-SMTP_FROM=revshare@altegio.com
-SMTP_FROM_NAME="Integration Hub"
-SMTP_MODE=starttls
 ```
+
+SMTP для уведомлений партнёров больше не используется; старые настройки можно не удалять.
 
 **Для Google Sheets:**
 
@@ -115,7 +110,7 @@ python -m revshare.worker
 
 Без worker'а:
 
-- Не отправляются уведомления (Telegram, email).
+- Не отправляются уведомления в Telegram. Email-рассылка партнёрам отключена.
 - Не обновляются снимки Altegio по расписанию.
 - Но всё остальное работает (сверка срабатывает при ручном импорте).
 

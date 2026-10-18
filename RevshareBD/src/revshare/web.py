@@ -24,7 +24,6 @@ from fastapi.templating import Jinja2Templates
 from revshare.countries import (
     ALTEGIO_LEGAL_ENTITIES,
     APP_CATEGORIES,
-    REPORT_CHANNELS,
     canonical_country,
     countries_for,
     country_label,
@@ -43,8 +42,7 @@ from revshare.application_breakdown import (
     breakdown_for_report,
 )
 from revshare.mysql import mysql_configured
-from revshare.dispatch import partner_letter, send_due_notices, send_partner_notice
-from revshare.mailer import mail_ready
+from revshare.dispatch import send_due_notices, send_partner_notice
 from revshare.mcp_client import (
     MCPError,
     authorization_url,
@@ -78,7 +76,7 @@ from revshare.notifications import (
 )
 from revshare.report_template import build_report_template_xlsx
 from revshare.secrets import load_secrets, public_base_url, set_secret, telegram_token
-from revshare.timezone import format_local_datetime, utc_now_iso
+from revshare.timezone import format_local_datetime, seconds_until_notice_send, utc_now_iso
 from revshare.sheet_sync import flush_queued_sheet_writes
 from revshare import sheets
 from revshare.revalidation import schedule_revalidation
@@ -586,13 +584,25 @@ async def _fx_autoload_loop(store: Store) -> None:
 
 
 async def _notice_scheduler_loop(store: Store) -> None:
-    """Run due notices hourly; send logs make successful deliveries idempotent."""
+    """Run due notices at 11:15 Yerevan time."""
     while True:
+        await asyncio.sleep(seconds_until_notice_send())
         try:
-            await asyncio.to_thread(send_due_notices, store)
+            if store.setting("notice_scheduler_enabled", "0") == "1":
+                store.record_notice_audit(source="scheduler", status="started")
+                await asyncio.to_thread(send_due_notices, store)
+                store.record_notice_audit(source="scheduler", status="completed")
+            else:
+                store.record_notice_audit(source="scheduler", status="disabled")
+        except asyncio.CancelledError:
+            raise
         except Exception:
             log.exception("Notice scheduler run failed")
-        await asyncio.sleep(3600)
+            try:
+                store.record_notice_audit(source="scheduler", status="error", detail="unexpected_error")
+            except Exception:
+                log.exception("Could not record scheduler failure")
+        await asyncio.sleep(60)
 
 
 @asynccontextmanager
@@ -609,7 +619,6 @@ async def lifespan(app: FastAPI):
     if (
         app.state.web_background_tasks
         and not testing
-        and app.state.store.setting("notice_scheduler_enabled", "0") == "1"
     ):
         tasks.append(asyncio.create_task(_notice_scheduler_loop(app.state.store)))
     yield
@@ -651,7 +660,10 @@ def _session_actor(request: Request) -> str:
 
 
 def create_app(
-    db_path: Path | None = None, *, admin_auth: bool | None = None
+    db_path: Path | None = None,
+    *,
+    admin_auth: bool | None = None,
+    public_forms_enabled: bool = False,
 ) -> FastAPI:
     load_secrets()
     app = FastAPI(
@@ -685,6 +697,11 @@ def create_app(
     @app.middleware("http")
     async def protect_admin(request: Request, call_next):
         path = request.url.path
+        if path.startswith("/submit/") and not public_forms_enabled:
+            return PlainTextResponse(
+                "Partner web form is no longer available. Please send the report through Telegram or contact the administrator.",
+                status_code=410,
+            )
         admin_path = (
             path == "/"
             or path.startswith("/admin/")
@@ -2314,7 +2331,7 @@ def create_app(
             contact_name="",
             email="",
             telegram="",
-            report_channel="email",
+            report_channel="telegram",
             token=token,
             rate=rate_value,
             currency="USD",
@@ -2331,7 +2348,7 @@ def create_app(
         period: str = "",
     ):
         partner = app.state.store.partner(partner_id)
-        if not partner or not partner["active"]:
+        if not partner:
             raise HTTPException(404, "Partner not found")
         payload = dict(partner)
         payload["legal_country"] = country_label(
@@ -2382,6 +2399,7 @@ def create_app(
             context(
                 request,
                 partner=payload,
+                archived=not bool(partner["active"]),
                     history=app.state.store.partner_history(partner_id),
                 drafts=drafts,
                     report_periods=report_periods,
@@ -2390,7 +2408,6 @@ def create_app(
                     selected_period_history=selected_period_history,
                 application_links=app.state.store.application_links(partner_id),
                 altegio_legal_entities=ALTEGIO_LEGAL_ENTITIES,
-                report_channels=REPORT_CHANNELS,
                 app_categories=APP_CATEGORIES,
                 notice_languages=NOTICE_LANGUAGES,
                 notice_settings=settings,
@@ -2400,7 +2417,7 @@ def create_app(
                         settings,
                         current_period(),
                         name=payload["name"],
-                        link=f"/submit/{payload['token']}",
+                        link="",
                     )
                 },
                 bot_username=bot_username,
@@ -2410,10 +2427,8 @@ def create_app(
                 tg_changed=tg_changed,
                 tg_unlinked=tg_unlinked,
                 tg_inherited=tg_inherited,
-                public_base_url=public_base_url(),
                 notice_result=request.query_params.get("notice"),
                 notice_reason=request.query_params.get("reason"),
-                mail_ready=mail_ready(),
                 active_tab=tab if tab in PARTNER_TABS else PARTNER_TABS[0],
                 partner_tabs=PARTNER_TABS,
                 saved=saved == "1",
@@ -2516,9 +2531,7 @@ def create_app(
         legal_country: str = Form(""),
         altegio_legal_entity: str = Form(""),
         contact_name: str = Form(""),
-        email: str = Form(""),
         telegram: str = Form(""),
-        report_channel: str = Form("email"),
         internal_comment: str = Form(""),
         application_url: list[str] = Form(default=[]),
         application_comment: list[str] = Form(default=[]),
@@ -2539,8 +2552,6 @@ def create_app(
         altegio_legal_entity = altegio_legal_entity.strip()
         if altegio_legal_entity and altegio_legal_entity not in ALTEGIO_LEGAL_ENTITIES:
             raise HTTPException(422, "Invalid Altegio legal entity")
-        if report_channel not in REPORT_CHANNELS:
-            raise HTTPException(422, "Invalid report channel")
         if report_automation_status not in PARTNER_AUTOMATION_STATUSES:
             report_automation_status = str(
                 partner["report_automation_status"] or "manual"
@@ -2578,12 +2589,12 @@ def create_app(
             legal_country=canonical_country(legal_country),
             altegio_legal_entity=altegio_legal_entity,
             contact_name=contact_name.strip(),
-            email=email.strip(),
+            email=partner["email"] or "",
             # Telegram handle is intentionally NOT passed: the contact-change
             # flow below reads the previous value, compares it to the new one,
             # and writes the new handle only when it actually changed (with
             # the chat_id unlink and invite revoke in the same transaction).
-            report_channel=report_channel,
+            report_channel="telegram",
             rate=rate_value,
             currency=currency.upper(),
             notice_settings=notice_settings,
@@ -2593,11 +2604,7 @@ def create_app(
         )
         app.state.store.replace_application_links(partner_id, links)
         bot_configured = bool(telegram_token())
-        create_invite = (
-            report_channel == "telegram"
-            and bool(telegram.strip())
-            and bot_configured
-        )
+        create_invite = bool(telegram.strip()) and bot_configured
         contact_result = app.state.store.apply_telegram_contact_change(
             partner_id,
             telegram.strip(),
@@ -2711,7 +2718,7 @@ def create_app(
             return RedirectResponse("/admin/settings?mcp=error#altegio", status_code=303)
         return RedirectResponse("/admin/settings?mcp=connected#altegio", status_code=303)
 
-    SETTINGS_TABS = ("general", "bot", "digest", "schedule", "notices")
+    SETTINGS_TABS = ("bot", "digest", "schedule", "notices", "notice_log")
 
     @app.get("/admin/settings", response_class=HTMLResponse)
     def settings_page(
@@ -2724,7 +2731,7 @@ def create_app(
         selected = language if language in NOTICE_LANGUAGES else current_language(request)
         if selected not in NOTICE_LANGUAGES:
             selected = "en"
-        active_tab = tab if tab in SETTINGS_TABS else "general"
+        active_tab = tab if tab in SETTINGS_TABS else "bot"
         stored_url = app.state.store.setting("public_base_url") or public_base_url()
         global_schedule = app.state.store.global_schedule()
         planned = {
@@ -2798,6 +2805,7 @@ def create_app(
                     "notice_scheduler_enabled", "0"
                 )
                 == "1",
+                notice_audit=app.state.store.notice_audit_entries(),
                 active_tab=active_tab,
             ),
         )
@@ -2949,19 +2957,11 @@ def create_app(
 
     @app.get("/admin/partners/{partner_id}/letter/{notice_key}", response_class=HTMLResponse)
     def preview_partner_letter(partner_id: int, notice_key: str):
-        partner = app.state.store.partner(partner_id)
-        if not partner or not partner["active"]:
-            raise HTTPException(404, "Partner not found")
-        if notice_key not in PARTNER_NOTICE_KEYS:
-            raise HTTPException(404, "Notice not found")
-        letter = partner_letter(
-            partner, current_period(), notice_key, store=app.state.store
-        )
-        return HTMLResponse(letter["html"])
+        raise HTTPException(410, "Email notifications are no longer available")
 
     @app.post("/admin/notices/run")
     def run_due_notices():
-        send_due_notices(app.state.store)
+        send_due_notices(app.state.store, source="manual")
         return RedirectResponse("/admin/settings?notice=ran&tab=schedule", status_code=303)
 
     @app.post("/admin/partners/{partner_id}/archive")
@@ -2983,6 +2983,9 @@ def create_app(
 
     @app.post("/admin/partners/{partner_id}/telegram/unlink")
     def unlink_telegram(partner_id: int):
+        partner = app.state.store.partner(partner_id)
+        if not partner or not partner["active"]:
+            raise HTTPException(404, "Partner not found")
         if not app.state.store.unlink_telegram_chat(partner_id):
             raise HTTPException(404, "Partner not found or already unlinked")
         return RedirectResponse(
@@ -3245,4 +3248,7 @@ app = create_app()
 
 
 def run() -> None:
-    uvicorn.run("revshare.web:app", host="0.0.0.0", port=43127, reload=False)
+    uvicorn.run(
+        "revshare.web:app", host=os.getenv("REVSHARE_HOST", "127.0.0.1"),
+        port=43127, reload=False,
+    )

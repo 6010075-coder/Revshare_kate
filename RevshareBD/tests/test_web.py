@@ -124,7 +124,7 @@ def test_parse_partner_report_calculates_share(tmp_path: Path):
 
 
 def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -353,7 +353,7 @@ def test_payment_callback_contradicts_no_payment_claim():
 
 def test_full_submission_flow(tmp_path: Path):
     db_path = tmp_path / "test.db"
-    app = create_app(db_path)
+    app = create_app(db_path, public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -407,7 +407,7 @@ def test_full_submission_flow(tmp_path: Path):
 
 
 def test_multi_application_submission_flow(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -538,7 +538,7 @@ def test_multi_application_submission_flow(tmp_path: Path):
 
 
 def test_confirm_ignores_edited_extracted_values(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -580,7 +580,7 @@ def test_confirm_ignores_edited_extracted_values(tmp_path: Path):
 
 
 def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -639,7 +639,7 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
 
 
 def test_review_page_rereads_the_stored_file(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -686,7 +686,7 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
 
 
 def test_report_without_registry_requires_review(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -715,7 +715,7 @@ def test_report_without_registry_requires_review(tmp_path: Path):
 
 
 def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -842,7 +842,7 @@ def test_admin_can_save_manual_report_without_partner_file(tmp_path: Path):
 
 
 def test_dashboard_filters_and_revshare_column(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     quiet = store.add_partner(
@@ -910,7 +910,7 @@ def test_dashboard_filters_and_revshare_column(tmp_path: Path):
 
 
 def test_partner_profile_lists_previous_reports(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -949,7 +949,7 @@ def test_partner_profile_lists_previous_reports(tmp_path: Path):
 
 
 def test_partner_profile_splits_into_tabs(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -986,7 +986,7 @@ def test_partner_profile_splits_into_tabs(tmp_path: Path):
 
 
 def test_dashboard_shows_verified_and_review_revshare_sums(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1073,7 +1073,7 @@ def test_approved_revshare_summary_uses_usd_for_foreign_currency(tmp_path: Path)
 
 
 def test_financial_mismatch_requires_review_and_can_be_approved(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1122,7 +1122,7 @@ def test_financial_mismatch_requires_review_and_can_be_approved(tmp_path: Path):
 
 
 def test_unapprove_and_unpost_restore_previous_status(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1177,7 +1177,7 @@ def test_unapprove_and_unpost_restore_previous_status(tmp_path: Path):
 
 
 def test_repeated_submission_keeps_versions_and_resets_approval(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
     store.replace_usage(
@@ -1217,9 +1217,10 @@ def test_repeated_submission_keeps_versions_and_resets_approval(tmp_path: Path):
     assert [version["turnover"] for version in report["versions"]] == [200, 100]
 
 
-def test_same_location_reported_by_two_partners_flags_both(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+def test_same_location_flags_submitter_without_changing_other_partner(tmp_path: Path):
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     store: Store = app.state.store
+    _seed_reconciliation_base(store, "2026-08", active_ids=["101"])
     first = store.partner_by_token("demo-partner")
     second_id = store.add_partner(
         name="Second App",
@@ -1248,16 +1249,14 @@ def test_same_location_reported_by_two_partners_flags_both(tmp_path: Path):
             comment="",
             attachment=None,
         )
-    reports = [item for item in store.dashboard("2026-08") if item["report_id"]]
-    assert all(item["status"] == "requires_review" for item in reports)
-    assert all(
-        any(reason["key"] == "reason_cross_partner" for reason in item["reasons"])
-        for item in reports
-    )
+    reports = {item["id"]: item for item in store.dashboard("2026-08") if item["report_id"]}
+    assert reports[second_id]["status"] == "requires_review"
+    assert any(reason["key"] == "reason_cross_partner" for reason in reports[second_id]["reasons"])
+    assert not any(reason["key"] == "reason_cross_partner" for reason in reports[first["id"]]["reasons"])
 
 
 def test_disconnect_registry_requires_consecutive_idle_months(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1312,7 +1311,7 @@ def test_disconnect_registry_requires_consecutive_idle_months(tmp_path: Path):
 
 
 def test_partner_sees_long_idle_installations_on_review(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1352,7 +1351,7 @@ def test_partner_sees_long_idle_installations_on_review(tmp_path: Path):
 
 
 def test_altegio_data_page_links_to_settings(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1407,7 +1406,7 @@ def test_altegio_data_page_links_to_settings(tmp_path: Path):
 
 
 def test_dashboard_sorts_by_any_column(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     small = store.add_partner(
@@ -1464,7 +1463,7 @@ def test_dashboard_sorts_by_any_column(tmp_path: Path):
 
 
 def test_non_usd_reports_also_show_dollars(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1512,7 +1511,7 @@ def test_non_usd_reports_also_show_dollars(tmp_path: Path):
 
 
 def test_settings_load_the_month_average_on_refresh(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     store: Store = app.state.store
     app.state.store.fx_loader = lambda period: {
         "EUR": 0.77,
@@ -1528,24 +1527,21 @@ def test_settings_load_the_month_average_on_refresh(tmp_path: Path):
 
 
 def test_admin_can_preview_the_report_email(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
 
     preview = client.get(f"/admin/partners/{partner['id']}/letter/invite")
-    assert preview.status_code == 200
-    assert "Altegio Integration Hub" in preview.text
-    assert "Open the report form" in preview.text
-    assert "/submit/demo-partner?period=" in preview.text
+    assert preview.status_code == 410
 
     card = client.get(f"/admin/partners/{partner['id']}/edit")
-    assert f"/admin/partners/{partner['id']}/letter/invite" in card.text
-    assert client.get(f"/admin/partners/{partner['id']}/letter/digest").status_code == 404
+    assert f"/admin/partners/{partner['id']}/letter/invite" not in card.text
+    assert client.get(f"/admin/partners/{partner['id']}/letter/digest").status_code == 410
 
 
 def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1669,7 +1665,7 @@ def test_next_report_resolves_payment_follow_up(tmp_path: Path):
 
 
 def test_admin_switcher_offers_english_and_russian(tmp_path: Path):
-    client = TestClient(create_app(tmp_path / "test.db"))
+    client = TestClient(create_app(tmp_path / "test.db", public_forms_enabled=True))
     response = client.get("/")
     assert "Integration Hub Revshare" in response.text
     assert "Overview" in response.text
@@ -1705,7 +1701,7 @@ def test_admin_auth_protects_internal_routes_but_not_partner_form(
 ):
     monkeypatch.setenv("REVSHARE_ADMIN_USER", "kate")
     monkeypatch.setenv("REVSHARE_ADMIN_PASSWORD", "secret")
-    client = TestClient(create_app(tmp_path / "test.db", admin_auth=True))
+    client = TestClient(create_app(tmp_path / "test.db", public_forms_enabled=True, admin_auth=True))
     denied = client.get("/")
     assert denied.status_code == 401
     assert denied.headers["www-authenticate"].startswith("Basic")
@@ -1717,7 +1713,7 @@ def test_admin_auth_protects_internal_routes_but_not_partner_form(
 
 def test_admin_auth_fails_closed_without_password(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("REVSHARE_ADMIN_PASSWORD", raising=False)
-    client = TestClient(create_app(tmp_path / "test.db", admin_auth=True))
+    client = TestClient(create_app(tmp_path / "test.db", public_forms_enabled=True, admin_auth=True))
 
     assert client.get("/").status_code == 503
     assert client.get("/submit/demo-partner").status_code == 200
@@ -1734,7 +1730,7 @@ def test_admin_auth_can_be_disabled_explicitly_for_local_preview(monkeypatch):
 def test_admin_posts_require_csrf_token(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("REVSHARE_ADMIN_USER", "kate")
     monkeypatch.setenv("REVSHARE_ADMIN_PASSWORD", "secret")
-    app = create_app(tmp_path / "test.db", admin_auth=True)
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True, admin_auth=True)
     client = TestClient(app)
     credentials = base64.b64encode(b"kate:secret").decode()
     headers = {"Authorization": f"Basic {credentials}"}
@@ -1755,7 +1751,7 @@ def test_admin_posts_require_csrf_token(tmp_path: Path, monkeypatch):
 
 
 def test_accrual_page_does_not_write_to_sheets_on_get(tmp_path: Path):
-    client = TestClient(create_app(tmp_path / "test.db"))
+    client = TestClient(create_app(tmp_path / "test.db", public_forms_enabled=True))
     with patch("revshare.web.flush_queued_sheet_writes") as flush:
         response = client.get("/admin/accrual")
     assert response.status_code == 200
@@ -1763,7 +1759,7 @@ def test_accrual_page_does_not_write_to_sheets_on_get(tmp_path: Path):
 
 
 def test_cross_origin_posts_are_rejected(tmp_path: Path):
-    client = TestClient(create_app(tmp_path / "test.db"))
+    client = TestClient(create_app(tmp_path / "test.db", public_forms_enabled=True))
     response = client.post(
         "/admin/notices/run",
         headers={"Origin": "https://attacker.example"},
@@ -1772,7 +1768,7 @@ def test_cross_origin_posts_are_rejected(tmp_path: Path):
 
 
 def test_partner_form_opens_in_the_language_kate_picked(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -1792,7 +1788,7 @@ def test_partner_form_opens_in_the_language_kate_picked(tmp_path: Path):
 
 
 def test_russian_country_names_and_canonical_storage(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     client.get("/language/ru?next=/")
     client.post(
@@ -1830,7 +1826,7 @@ def test_russian_country_names_and_canonical_storage(tmp_path: Path):
 
 
 def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     response = client.post(
         "/admin/partners",
@@ -1892,7 +1888,8 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert saved["legal_country"] == "Poland"
     assert saved["altegio_legal_entity"] == "Open HC"
     assert saved["contact_name"] == "Anna"
-    assert saved["report_channel"] == "email"
+    assert saved["report_channel"] == "telegram"
+    assert saved["email"] == ""
     assert saved["internal_comment"] == "Проверить новый договор в октябре"
     assert saved["rate"] == 0.30
     assert saved["report_automation_status"] == "automatic"
@@ -1920,12 +1917,12 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     archived = client.post(f"/admin/partners/{partner['id']}/archive")
     assert archived.status_code == 200
     assert all(row["id"] != partner["id"] for row in app.state.store.partners())
-    assert client.get(f"/admin/partners/{partner['id']}/edit").status_code == 404
+    assert client.get(f"/admin/partners/{partner['id']}/edit").status_code == 200
     assert client.get(f"/submit/{saved['token']}").status_code == 404
 
 
 def test_partner_can_be_saved_without_altegio_legal_entity(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     client.post(
         "/admin/partners",
@@ -1958,7 +1955,7 @@ def test_partner_can_be_saved_without_altegio_legal_entity(tmp_path: Path):
 
 
 def test_partner_can_be_created_and_saved_without_application_link(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
 
     response = client.post("/admin/partners", data={"name": "", "legal_name": ""})
@@ -1990,7 +1987,7 @@ def test_partner_can_be_created_and_saved_without_application_link(tmp_path: Pat
 
 
 def test_partner_can_be_saved_without_notification_contact(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     client.post(
         "/admin/partners",
@@ -2017,7 +2014,7 @@ def test_partner_can_be_saved_without_notification_contact(tmp_path: Path):
 
 
 def test_partner_notice_exceptions_are_saved(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     client.post(
         "/admin/partners",
@@ -2065,7 +2062,7 @@ def test_partner_notice_exceptions_are_saved(tmp_path: Path):
 
 
 def test_global_notice_dates_apply_until_a_partner_overrides_them(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
 
@@ -2133,7 +2130,7 @@ def test_global_notice_dates_apply_until_a_partner_overrides_them(tmp_path: Path
 
 def test_notice_texts_are_shared_across_partners(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("revshare.web.telegram_token", lambda: "")
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
 
@@ -2191,7 +2188,7 @@ def test_notice_texts_are_shared_across_partners(tmp_path: Path, monkeypatch):
 
 
 def test_saving_snapshot_rechecks_already_submitted_report(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -2265,7 +2262,7 @@ def test_saving_snapshot_rechecks_already_submitted_report(tmp_path: Path):
 
 
 def test_json_snapshot_import_and_accrual_queue(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
@@ -2330,7 +2327,7 @@ def test_json_snapshot_import_and_accrual_queue(tmp_path: Path):
 
 
 def test_accrual_bulk_queue_with_checkboxes(tmp_path: Path):
-    app = create_app(tmp_path / "test.db")
+    app = create_app(tmp_path / "test.db", public_forms_enabled=True)
     client = TestClient(app)
     store: Store = app.state.store
     first = store.partner_by_token("demo-partner")

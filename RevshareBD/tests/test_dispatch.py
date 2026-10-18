@@ -134,7 +134,7 @@ def test_digest_goes_to_the_chat_from_settings(tmp_path):
     assert not any(item["key"] == "digest" for item in repeated)
 
 
-def test_email_channel_sends_a_subject_and_body(tmp_path):
+def test_email_channel_does_not_send_without_telegram(tmp_path):
     store = Store(tmp_path / "test.db")
     partner_id = store.add_partner(
         name="Mail App",
@@ -161,17 +161,9 @@ def test_email_channel_sends_a_subject_and_body(tmp_path):
         ),
         force=True,
     )
-    assert result["status"] == "sent"
-    to, subject, body, html = letters[0]
-    assert to == "finance@example.com"
-    assert subject == "Mail App: отчёт за 2026-08"
-    assert body.startswith("Здравствуйте")
-    assert "http" in body
-    assert "Открыть форму отчёта" in html
-    assert "/submit/mail-token?period=2026-08" in html
-    assert "Срок сдачи: 2026-09-07 включительно." in html
-    assert "Что подготовить" in html
-    assert "<html" in html
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
+    assert letters == []
+    assert store.partner(partner_id)["email"] == "finance@example.com"
 
 
 def test_letter_keeps_the_link_out_of_the_body_text(tmp_path):
@@ -228,7 +220,7 @@ def test_email_without_address_is_blocked(tmp_path):
         ),
         force=True,
     )
-    assert result == {"status": "blocked", "detail": "email_missing"}
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
     assert letters == []
 
 
@@ -407,6 +399,7 @@ def test_email_invite_does_not_attach_template(tmp_path):
         ),
         force=True,
     )
-    assert result["status"] == "sent"
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
+    assert letters == []
     assert documents == []
     assert _count_template_interactions(store, partner_id) == 0

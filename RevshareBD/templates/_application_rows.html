@@ -2,17 +2,13 @@
   {% if applications %}
     {% for item in applications %}
     <div class="repeat-row">
-      <div class="field grow">
-        <label>{{ t("application_url") }}</label>
+      <div class="field grow application-url-field{% if item.url %} has-application-link{% endif %}">
+        <label class="sr-only">{{ t("application_url") }}</label>
         <input name="application_url" type="url" value="{{ item.url }}" placeholder="https://">
-        <a class="text-link application-row-link" data-application-row-link href="{{ item.url }}" title="{{ item.url }}" target="_blank" rel="noopener">{{ item.url }}</a>
+        <a class="text-link application-row-link" data-application-row-link {% if item.url %}href="{{ item.url }}" title="{{ item.url }}"{% else %}hidden href="#"{% endif %} target="_blank" rel="noopener">{{ item.url }}</a>
       </div>
       <div class="field grow">
-        <label>{{ t("application_comment") }}</label>
-        <input name="application_comment" value="{{ item.comment }}" placeholder="{{ t('application_comment_placeholder') }}">
-      </div>
-      <div class="field grow">
-        <label>{{ t("category") }}</label>
+        <label class="sr-only">{{ t("category") }}</label>
         <select name="application_category">
           <option value="" {% if not item.category %}selected{% endif %}>{{ t("category_not_set") }}</option>
           {% for value in app_categories %}
@@ -20,21 +16,22 @@
           {% endfor %}
         </select>
       </div>
-      <button class="icon-remove" type="button" aria-label="{{ t('remove_application') }}">✕</button>
+      <div class="field grow">
+        <label class="sr-only">{{ t("application_comment") }}</label>
+        <input name="application_comment" value="{{ item.comment }}" placeholder="{{ t('application_comment_placeholder') }}">
+      </div>
+      <button class="icon-remove" type="button" title="{{ t('remove_application') }}" aria-label="{{ t('remove_application') }}">✕</button>
     </div>
     {% endfor %}
   {% else %}
     <div class="repeat-row">
-      <div class="field grow">
-        <label>{{ t("application_url") }}</label>
+      <div class="field grow application-url-field">
+        <label class="sr-only">{{ t("application_url") }}</label>
         <input name="application_url" type="url" placeholder="https://">
+        <a class="text-link application-row-link" data-application-row-link hidden href="#" target="_blank" rel="noopener"></a>
       </div>
       <div class="field grow">
-        <label>{{ t("application_comment") }}</label>
-        <input name="application_comment" placeholder="{{ t('application_comment_placeholder') }}">
-      </div>
-      <div class="field grow">
-        <label>{{ t("category") }}</label>
+        <label class="sr-only">{{ t("category") }}</label>
         <select name="application_category">
           <option value="" selected>{{ t("category_not_set") }}</option>
           {% for value in app_categories %}
@@ -42,7 +39,11 @@
           {% endfor %}
         </select>
       </div>
-      <button class="icon-remove" type="button" aria-label="{{ t('remove_application') }}">✕</button>
+      <div class="field grow">
+        <label class="sr-only">{{ t("application_comment") }}</label>
+        <input name="application_comment" placeholder="{{ t('application_comment_placeholder') }}">
+      </div>
+      <button class="icon-remove" type="button" title="{{ t('remove_application') }}" aria-label="{{ t('remove_application') }}">✕</button>
     </div>
   {% endif %}
 </div>

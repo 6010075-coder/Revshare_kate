@@ -1,5 +1,7 @@
 # Автоматизированные тесты — карта
 
+`test_telegram_only_integration.py` проверяет отказ старой web-формы, явное включение формы в тестовом режиме, сохранение email при миграции и редактировании, архив и время рассылки. Выбор приложения в Telegram проверяется в `test_phase2_acceptance.py`, а прежняя web-форма — в `test_web.py` при явном включении только для тестов.
+
 Какой файл с тестами что покрывает. Связь с партнёрскими (P-XX) и админскими (A-XX) историями — в [`../../acceptance/user-stories.md`](../../acceptance/user-stories.md), с подробными сценариями — в [`../../acceptance/scenarios-partner.md`](../../acceptance/scenarios-partner.md) и [`../../acceptance/scenarios-admin.md`](../../acceptance/scenarios-admin.md).
 
 ## Как читать

@@ -20,12 +20,12 @@
 
 <section class="stats">
   <article class="money">
-    <strong>{{ "{:,.2f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>
+    <strong>{{ "{:,.0f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>
     <span>{{ t("revshare_verified") }}</span>
     <small>{{ t("partners_with_reports", count=verified_group.count) }}{% if verified_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
   </article>
   <article class="money">
-    <strong>{{ "{:,.2f}".format(review_group.amount).replace(",", " ") }} {{ review_group.currency }}</strong>
+    <strong>{{ "{:,.0f}".format(review_group.amount).replace(",", " ") }} {{ review_group.currency }}</strong>
     <span>{{ t("revshare_in_review") }}</span>
     <small>{{ t("partners_with_reports", count=review_group.count) }}{% if review_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
   </article>
@@ -94,8 +94,6 @@
       <tr>
         <td>
           <strong><a class="text-link" href="/admin/partners/{{ item.id }}/edit">{{ item.name }}</a></strong>
-          <small>{{ t("category_" + item.category) if item.category else t("category_not_set") }}</small>
-          <small>{{ item.telegram or item.email or t("contact_missing") }}</small>
         </td>
         <td>
           {% if item.report_id %}
@@ -139,8 +137,6 @@
         <td class="actions">
           {% if item.report_id %}
             <a href="/reports/{{ item.report_id }}">{{ t("open_report") }}</a>
-          {% else %}
-            <a href="/submit/{{ item.token }}?period={{ period }}">{{ t("form_link") }}</a>
           {% endif %}
         </td>
       </tr>

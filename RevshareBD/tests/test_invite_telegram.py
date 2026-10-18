@@ -181,7 +181,7 @@ def test_telegram_invite_empty_override_falls_back_to_i18n_default(tmp_path: Pat
     assert "http" not in text
 
 
-def test_email_invite_keeps_existing_link_appended_behaviour(tmp_path: Path):
+def test_email_invite_is_not_sent(tmp_path: Path):
     store = Store(tmp_path / "test.db")
     pid = store.add_partner(
         name="Mail",
@@ -209,15 +209,8 @@ def test_email_invite_keeps_existing_link_appended_behaviour(tmp_path: Path):
         ),
         force=True,
     )
-    assert result["status"] == "sent"
-    assert len(letters) == 1
-    _to, subject, body, _html = letters[0]
-    assert subject.startswith("Mail:")
-    # Regression guard: email invite still uses the original Russian wording.
-    assert body.startswith("Здравствуйте")
-    # Regression guard: web-form link must remain appended to the email body.
-    assert "http" in body
-    assert "submit/mail?period=2026-08" in body
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
+    assert letters == []
 
 
 def test_invite_telegram_is_part_of_notice_keys_but_disabled_by_default():

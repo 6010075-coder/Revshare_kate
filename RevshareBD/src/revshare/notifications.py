@@ -198,6 +198,14 @@ ALL_DEFAULT_MESSAGES = {
     if message.strip()
 }
 
+# Recognise historical defaults while presenting new defaults without a web link.
+for _language_messages in DEFAULT_MESSAGES.values():
+    for _key, _message in _language_messages.items():
+        _language_messages[_key] = _message.replace("{link}", "").strip()
+ALL_DEFAULT_MESSAGES.update(
+    message for language in DEFAULT_MESSAGES.values() for message in language.values() if message
+)
+
 # invite_telegram is intentionally empty in every language: the runtime
 # default lives in revshare.i18n (key "invite_telegram_default"). Empty
 # string in normalize_notice_settings means "no per-partner override → fall
@@ -412,6 +420,8 @@ def schedule_for_period(
     deadline = deadline_date(settings, period)
     events = []
     for notice in settings["notices"]:
+        if notice["key"] == "invite_telegram":
+            continue
         if not notice["enabled"]:
             continue
         send_on = planned_date(

@@ -12,7 +12,7 @@ HTTP-ручки FastAPI приложения. Основано на `src/revshar
 |---|---|---|
 | `/` | Главная | открыто |
 | `/language/{lang}` | Переключение языка | открыто |
-| `/submit/{token}` | Партнёрская форма | по персональной ссылке |
+| `/submit/{token}` | Устаревшая партнёрская форма | 410; включается только явно в тестовом приложении |
 | `/admin/*` | Админка | Basic Auth |
 | `/reports/{id}` | Публичный отчёт | по ссылке |
 
@@ -34,6 +34,8 @@ HTTP-ручки FastAPI приложения. Основано на `src/revshar
 - `language`: `en`, `ru`, `uk`, `pl`, `hu`, `pt-BR`
 
 ## Партнёрская форма
+
+Далее описан сохранённый тестовый сценарий. В обычном запуске все пути `/submit/` возвращают 410; партнёры отправляют отчёты через Telegram. Для изолированных тестов используется `create_app(..., public_forms_enabled=True)`.
 
 ### `GET /submit/{token}`
 
@@ -109,12 +111,7 @@ HTTP-ручки FastAPI приложения. Основано на `src/revshar
 
 Создание нового партнёра.
 
-- **Поля формы:**
-  - `name` — название (обязательно, уникально)
-  - `legal_name`, `legal_country`, `altegio_legal_entity`, `contact_name`, `email`, `telegram`, `report_channel`, `internal_comment`
-  - `rate` — ставка revshare
-  - `currency` — `USD`, `EUR`, …
-  - `active` — `1` или `0`
+- **Поля формы:** `name`, `legal_name`, `rate`. Остальные параметры настраиваются в карточке; канал нового партнёра — Telegram.
 
 ### `GET /admin/partners/{partner_id}/edit`
 

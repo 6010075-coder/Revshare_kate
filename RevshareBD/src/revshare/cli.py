@@ -199,7 +199,7 @@ def cmd_send_notices(args: argparse.Namespace) -> int:
     from revshare.timezone import local_today
 
     today = date.fromisoformat(args.date) if args.date else local_today()
-    results = send_due_notices(Store(), today=today, period=args.month)
+    results = send_due_notices(Store(), today=today, period=args.month, source="manual")
     print(json.dumps(results, ensure_ascii=False, indent=2))
     return 0
 

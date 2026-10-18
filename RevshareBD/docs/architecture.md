@@ -17,7 +17,7 @@ Integration Hub Revshare — это система, в которой партн
 | Зависимости | `uv` или `pip`, файл `uv.lock` |
 | Тесты | pytest |
 | CI | GitHub Actions (`.github/workflows/test.yml`) |
-| Внешние API | Google Sheets API, Telegram Bot API, SMTP, Altegio BI MCP/MySQL |
+| Внешние API | Google Sheets API, Telegram Bot API, Altegio BI MCP/MySQL |
 | CLI-точка | `python -m revshare` |
 
 Стоимость эксплуатации — `$0` локально, `$0–5/мес` в GCP при малой нагрузке, до `$20/мес` на пике. LLM-вызовы в проекте не используются.
@@ -33,7 +33,7 @@ Integration Hub Revshare — это система, в которой партн
 
 Что делает:
 
-- Принимает HTTP-запросы от партнёров (загрузка файлов) и админов.
+- Принимает HTTP-запросы администраторов; партнёрские пути `/submit/` отключены в обычном запуске.
 - Рендерит HTML через Jinja2.
 - Парсит загруженные файлы (Excel, CSV, PDF).
 - Делает сверку с данными Altegio.
@@ -46,10 +46,10 @@ Integration Hub Revshare — это система, в которой партн
 Файл: `src/revshare/worker.py`, точка входа — `run()`.
 Запуск: `revshare-worker` или `python -m revshare.worker`.
 
-Что делает каждый час:
+Что делает:
 
 - Обновляет снимки Altegio для активных партнёров (MySQL или MCP).
-- Запускает отправку запланированных уведомлений (Telegram + email).
+- Запускает отправку запланированных уведомлений в Telegram ежедневно в 11:15 по времени Еревана.
 - Обрабатывает пересчёт сверки при обновлении снимков.
 - Очищает истёкшие сессии Telegram polling.
 
@@ -64,9 +64,9 @@ src/revshare/
 ├── extract.py        # Парсинг Excel/CSV/PDF/текста → черновик
 ├── worker.py         # Фоновый планировщик
 ├── bot.py            # Telegram polling: /start, привязка чата
-├── dispatch.py       # Маршрутизация уведомлений (Telegram + SMTP)
-├── mailer.py         # SMTP-отправка писем
-├── email_letter.py   # Шаблоны писем (HTML + текст)
+├── dispatch.py       # Уведомления в Telegram
+├── mailer.py         # Исторический SMTP-код, не используется рассылкой
+├── email_letter.py   # Исторические шаблоны писем
 ├── notifications.py  # Расписание уведомлений и типы
 ├── telegram.py       # Обёртка над Telegram Bot API
 ├── altegio_sync.py   # Синхронизация снимков из Altegio BI
@@ -90,6 +90,8 @@ src/revshare/
 ```
 
 ## Слои приложения
+
+Примечание: в схемах ниже упоминания SMTP и партнёрской формы относятся к сохранённому историческому коду, а не к действующему каналу отправки.
 
 Код разделён на четыре слоя. Зависимости идут сверху вниз.
 
@@ -178,7 +180,7 @@ src/revshare/
 ```
 worker.py каждый час
   └── dispatch.dispatch_for_partner(partner, period, notice_key)
-       └── выбирает каналы: telegram (если привязан), email (если есть)
+       └── отправляет через Telegram при наличии привязанного чата
        └── telegram.telegram_send_message или mailer.send
        └── notice_sends → лог отправки
        └── защита от дублей: тот же notice_key+period не шлётся повторно

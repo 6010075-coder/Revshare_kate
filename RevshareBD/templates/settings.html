@@ -14,11 +14,11 @@
 {% if saved %}<div class="notice neutral">{{ t("settings_saved") }}</div>{% endif %}
 
 {% set settings_tabs = [
-  ("general", t("settings_general")),
   ("bot", t("bot_tab_title")),
   ("digest", t("digest_tab_title")),
   ("schedule", t("notice_schedule")),
   ("notices", t("notice_texts")),
+  ("notice_log", t("audit_title")),
 ] %}
 
 <nav class="tabs" data-tabs>
@@ -27,28 +27,31 @@
   {% endfor %}
 </nav>
 
-<form method="post" action="/admin/settings/general" class="card wide-form tab-panel {{ 'active' if active_tab == 'general' else '' }}" data-panel="general">
-{{ csrf_field(csrf_token) }}
-  <h2>{{ t("settings_general") }}</h2>
-  <p class="hint">{{ t("settings_general_hint") }}</p>
-  <div class="field">
-    <label for="public_base_url">{{ t("public_url") }}</label>
-    <input id="public_base_url" name="public_base_url" type="url" value="{{ public_form_url }}" placeholder="https://">
-    <small>{{ t("public_url_hint") }}</small>
-  </div>
-  <div class="form-actions">
-    <button class="button" type="submit">{{ t("save_changes") }}</button>
-  </div>
-</form>
+<section class="card wide-form tab-panel {{ 'active' if active_tab == 'notice_log' else '' }}" data-panel="notice_log">
+  <h2>{{ t("audit_title") }}</h2>
+  <p class="hint">{{ t("audit_hint") }}</p>
+  <p class="hint">{{ t("audit_unconfirmed_hint") }}</p>
+  {% if notice_audit %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>{{ t("audit_time") }}</th><th>{{ t("audit_source") }}</th><th>{{ t("audit_recipient") }}</th><th>{{ t("audit_event") }}</th><th>{{ t("audit_result") }}</th></tr></thead>
+    <tbody>
+    {% for entry in notice_audit %}
+      <tr><td>{{ format_local(entry.created_at) }}</td>
+        <td>{{ t('audit_source_' + entry.source) }}</td>
+        <td>{{ entry.partner_name or '—' }}</td>
+        <td>{{ entry.notice_key or '—' }}{% if entry.period %} · {{ entry.period }}{% endif %}</td>
+        <td>{{ t('audit_status_' + entry.status) }}{% if entry.detail %} · {{ t('audit_detail_' + entry.detail) if entry.detail[:4] != '2026' and not entry.detail[:1].isdigit() else entry.detail }}{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="hint">{{ t("audit_empty") }}</p>{% endif %}
+</section>
 
 <section class="card wide-form tab-panel {{ 'active' if active_tab == 'bot' else '' }}" data-panel="bot">
   <h2>{{ t("bot_tab_title") }}</h2>
   {% if bot_ready %}
   <p class="hint"><strong>{{ t("bot_status_connected") }}</strong> · {{ t("bot_username_label") }}: <code>@{{ bot_username }}</code>{% if active_bot and active_bot.telegram_bot_id %} · ID: <code>{{ active_bot.telegram_bot_id }}</code>{% endif %}</p>
   <p class="hint">{{ t("bot_capabilities") }}</p>
-  {% if not public_form_url %}
-  <p class="hint">{{ t("public_url_missing") }}</p>
-  {% endif %}
   {% else %}
   <p class="hint">{{ t("telegram_bot_missing") }}</p>
   {% endif %}

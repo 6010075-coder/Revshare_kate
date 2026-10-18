@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Callable
 
 from revshare.email_letter import SUBJECTS as EMAIL_SUBJECTS
 from revshare.email_letter import build_letter
 from revshare.i18n import translator
-from revshare.mailer import MailError, mail_ready, send_email
 from revshare.notifications import (
     deadline_date,
     format_notice,
@@ -23,6 +23,12 @@ from revshare.telegram import TelegramError, send_document, send_message
 Sender = Callable[[str, str], None]
 MailSender = Callable[[str, str, str, str], None]
 DocumentSender = Callable[[str, bytes, str, str], None]
+
+
+def _without_retired_form_links(text: str) -> str:
+    text = text.replace("{{link}}", "").replace("{link}", "")
+    return re.sub(r"(?:https?://[^\s<>]*|)/submit/[^\s<>]*", "", text).strip()
+
 
 DEFAULT_PUBLIC_URL = "http://127.0.0.1:43127"
 
@@ -52,7 +58,7 @@ def due_events(
             partner["notice_settings"],
             period,
             name=partner["name"],
-            link=form_link(partner["token"], period, store),
+            link="",
         )
         if event["send_on"] == today
     ]
@@ -282,7 +288,7 @@ def attach_invite_template(
     )
 
 
-def send_partner_notice(
+def _send_partner_notice(
     store: Store,
     partner: dict,
     period: str,
@@ -300,7 +306,7 @@ def send_partner_notice(
             partner["notice_settings"],
             period,
             name=partner["name"],
-            link=form_link(partner["token"], period, store),
+            link="",
         )
     }
     event = events.get(notice_key)
@@ -308,26 +314,16 @@ def send_partner_notice(
         return {"status": "skipped", "detail": "notice_disabled"}
     if should_skip_because_submitted(store, partner["id"], period, notice_key):
         return {"status": "skipped", "detail": "already_submitted"}
-    channel = partner.get("report_channel")
-    if channel == "email":
-        address = (partner.get("email") or "").strip()
-        if not address:
-            return {"status": "blocked", "detail": "email_missing"}
-        if not mail_sender and not mail_ready():
-            return {"status": "blocked", "detail": "smtp_not_configured"}
-    elif channel == "telegram":
-        chat_id = partner.get("telegram_chat_id") or ""
-        if not chat_id:
-            return {"status": "blocked", "detail": "partner_must_start_bot"}
-        if not sender and not (bot_token or telegram_token()):
-            return {"status": "blocked", "detail": "bot_token_missing"}
-    else:
-        return {"status": "skipped", "detail": "channel_not_supported"}
+    chat_id = partner.get("telegram_chat_id") or ""
+    if not chat_id:
+        return {"status": "blocked", "detail": "partner_must_start_bot"}
+    if not sender and not (bot_token or telegram_token()):
+        return {"status": "blocked", "detail": "bot_token_missing"}
     if not store.claim_notice(
         partner["id"], period, notice_key, force=force
     ):
         return {"status": "skipped", "detail": "already_sent"}
-    if channel == "telegram" and notice_key == "invite":
+    if notice_key == "invite":
         # The Telegram invite uses a separate template (per-partner override
         # from notice_settings.notices or i18n invite_telegram_default).
         # It deliberately does NOT carry the web-form link — the xlsx
@@ -336,29 +332,7 @@ def send_partner_notice(
         text = _resolve_invite_text(partner, period, deadline_iso)
     else:
         text = event["message"].strip()
-        link = form_link(partner["token"], period, store)
-        if link not in text:
-            text = f"{text}\n{link}"
-    if channel == "email":
-        letter = partner_letter(
-            partner, period, notice_key, message=event["message"], store=store
-        )
-        try:
-            if mail_sender:
-                mail_sender(address, letter["subject"], letter["text"], letter["html"])
-            else:
-                send_email(
-                    address, letter["subject"], letter["text"], letter["html"]
-                )
-        except MailError as error:
-            store.log_notice_send(
-                partner["id"], period, notice_key, "error", str(error)[:500]
-            )
-            return {"status": "error", "detail": "email_rejected"}
-        store.log_notice_send(partner["id"], period, notice_key, "sent", "email")
-        return {"status": "sent", "detail": notice_key}
-
-    chat_id = partner.get("telegram_chat_id") or ""
+    text = _without_retired_form_links(text)
     try:
         if sender:
             sender(str(chat_id), text)
@@ -378,6 +352,34 @@ def send_partner_notice(
     return {"status": "sent", "detail": notice_key}
 
 
+def send_partner_notice(
+    store: Store,
+    partner: dict,
+    period: str,
+    notice_key: str,
+    *,
+    sender: Sender | None = None,
+    mail_sender: MailSender | None = None,
+    bot_token: str | None = None,
+    document_sender: DocumentSender | None = None,
+    force: bool = False,
+    source: str = "manual",
+) -> dict[str, str]:
+    try:
+        result = _send_partner_notice(store, partner, period, notice_key, sender=sender,
+                                      mail_sender=mail_sender, bot_token=bot_token,
+                                      document_sender=document_sender, force=force)
+    except Exception:
+        store.record_notice_audit(source=source, status="error", detail="unexpected_error",
+                                  partner_id=partner["id"], partner_name=partner["name"],
+                                  period=period, notice_key=notice_key)
+        raise
+    store.record_notice_audit(source=source, status=result["status"], detail=result.get("detail", ""),
+                              partner_id=partner["id"], partner_name=partner["name"],
+                              period=period, notice_key=notice_key)
+    return result
+
+
 def send_due_notices(
     store: Store,
     today: date | None = None,
@@ -387,6 +389,7 @@ def send_due_notices(
     mail_sender: MailSender | None = None,
     bot_token: str | None = None,
     kate_sender: Sender | None = None,
+    source: str = "schedule",
 ) -> list[dict[str, str]]:
     today = today or local_today()
     period = period or reporting_period()
@@ -402,10 +405,12 @@ def send_due_notices(
                     sender=sender,
                     mail_sender=mail_sender,
                     bot_token=bot_token,
+                    source=source,
                 )
                 results.append({"partner": partner["name"], "key": event["key"], **result})
             elif event["key"] == "digest":
                 if not store.claim_notice(0, period, "digest"):
+                    store.record_notice_audit(source=source, status="skipped", detail="already_sent", period=period, notice_key="digest")
                     continue
                 kate_chat = store.digest_chat()
                 if not kate_chat:
@@ -418,6 +423,7 @@ def send_due_notices(
                         }
                     )
                     store.log_notice_send(0, period, "digest", "blocked", "digest_chat_missing")
+                    store.record_notice_audit(source=source, status="blocked", detail="digest_chat_missing", period=period, notice_key="digest")
                     continue
                 text = digest_text(
                     store, period, store.setting("digest_language", "ru")
@@ -431,11 +437,13 @@ def send_due_notices(
                         token = bot_token or telegram_token()
                         send_message(token, kate_chat, text)
                     store.log_notice_send(0, period, "digest", "sent", "")
+                    store.record_notice_audit(source=source, status="sent", detail="digest", period=period, notice_key="digest")
                     results.append(
                         {"partner": "Internal", "key": "digest", "status": "sent", "detail": ""}
                     )
                 except TelegramError:
                     store.log_notice_send(0, period, "digest", "error", "telegram_rejected")
+                    store.record_notice_audit(source=source, status="error", detail="telegram_rejected", period=period, notice_key="digest")
                     results.append(
                         {
                             "partner": "Internal",

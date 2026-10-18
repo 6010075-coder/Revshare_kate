@@ -10,19 +10,30 @@ from revshare.altegio_sync import sync_period
 from revshare.notifications import reporting_period
 from revshare.secrets import load_secrets, telegram_token
 from revshare.store import Store
+from revshare.timezone import seconds_until_notice_send
 
 log = logging.getLogger("revshare.worker")
 
 
 async def _notice_scheduler_loop(store: Store) -> None:
     while True:
+        await asyncio.sleep(seconds_until_notice_send())
         try:
-            await asyncio.to_thread(send_due_notices, store)
+            if store.setting("notice_scheduler_enabled", "0") == "1":
+                store.record_notice_audit(source="scheduler", status="started")
+                await asyncio.to_thread(send_due_notices, store)
+                store.record_notice_audit(source="scheduler", status="completed")
+            else:
+                store.record_notice_audit(source="scheduler", status="disabled")
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Notice scheduler run failed")
-        await asyncio.sleep(3600)
+            try:
+                store.record_notice_audit(source="scheduler", status="error", detail="unexpected_error")
+            except Exception:
+                log.exception("Could not record scheduler failure")
+        await asyncio.sleep(60)
 
 
 async def _fx_autoload_loop(store: Store) -> None:
@@ -69,6 +80,7 @@ async def _altegio_sync_loop(store: Store) -> None:
 async def run_worker() -> None:
     load_secrets()
     store = Store(fx_loader=fetch_month_average_rates)
+    store.record_unconfirmed_scheduler_run()
     tasks: list[asyncio.Task] = [
         asyncio.create_task(_notice_scheduler_loop(store)),
         asyncio.create_task(_fx_autoload_loop(store)),
