@@ -45,7 +45,7 @@
         <td><small>{{ row.active_count }} {{ t("active") }} · {{ row.connected_count }} {{ t("connected") }}</small></td>
         {% if show_status %}
         <td>
-          <span class="status {{ 'green' if row.display_status == 'checked' else 'yellow' if row.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+          <span class="status {{ 'green' if row.display_status == 'confirmed' else 'yellow' if row.display_status == 'partner_submitted' else 'muted' }}">
             {{ t("report_status_" + row.display_status) }}
           </span>
         </td>

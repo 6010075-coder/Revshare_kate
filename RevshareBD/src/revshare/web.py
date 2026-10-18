@@ -36,7 +36,11 @@ from revshare.altegio import (
     snapshot_url,
 )
 from revshare.altegio_sync import parse_application_id, sync_period
-from revshare.application_breakdown import add_usage_checks, breakdown_for_report
+from revshare.application_breakdown import (
+    KNOWN_APPLICATION_NAMES,
+    add_usage_checks,
+    breakdown_for_report,
+)
 from revshare.mysql import mysql_configured
 from revshare.dispatch import partner_letter, send_due_notices, send_partner_notice
 from revshare.mailer import mail_ready
@@ -396,8 +400,7 @@ def review_active_tab(
 
 
 DASHBOARD_STATUSES = (
-    "all", "missing", "submitted", "approved", "review", "verified",
-    "checked", "discrepancies", "manual", "attention",
+    "all", "missing", "partner_submitted", "admin_submitted", "confirmed",
 )
 DASHBOARD_RISKS = ("all", "green", "yellow", "red")
 STATUS_ORDER = {"requires_review": 0, "verified": 1}
@@ -547,31 +550,13 @@ def sort_links(base: dict, sort: str, direction: str) -> dict:
 def matches_dashboard_filters(item: dict, filters: dict) -> bool:
     status = filters["status"]
     submitted = item["report_id"] is not None
-    if status in {"checked", "discrepancies", "manual", "attention"} and (
-        not submitted or item.get("display_status") != status
-    ):
-        return False
-    if status == "submitted" and not submitted:
-        return False
-    if status == "missing" and submitted:
-        return False
-    if status == "approved" and (
-        not submitted
-        or item.get("workflow_status") not in ("approved", "posted")
-    ):
-        return False
-    if status == "review" and (
-        not submitted
-        or item.get("workflow_status") in ("approved", "posted")
-        or item["status"] != "requires_review"
-    ):
-        return False
-    if status == "verified" and (
-        not submitted
-        or item.get("workflow_status") in ("approved", "posted")
-        or item["status"] != "verified"
-    ):
-        return False
+    if status == "missing":
+        if submitted:
+            return False
+    elif status in {"partner_submitted", "admin_submitted", "confirmed"}:
+        if not submitted or item.get("display_status") != status:
+            return False
+    # status == "all" falls through to risk + search filters below
     if filters["risk"] != "all" and (
         not submitted or item["risk_level"] != filters["risk"]
     ):
@@ -1205,6 +1190,27 @@ def create_app(
         application_breakdown = breakdown_for_report(
             parsed, app.state.store.application_links(partner["id"])
         )
+        # FR-04: pre-resolve the application that owns this draft. When the
+        # partner has several configured APPs we leave ``application_id``
+        # NULL on the draft and route them to the selection screen; with
+        # one configured APP we auto-bind and skip the prompt; with zero
+        # APPs we block the upload (Kate must add one first).
+        configured_apps = [
+            (link, parse_application_id(link.get("url", "")))
+            for link in app.state.store.application_links(partner["id"])
+        ]
+        configured_apps = [
+            (link, app_id) for link, app_id in configured_apps if app_id is not None
+        ]
+        if not configured_apps:
+            raise HTTPException(
+                400,
+                "У вас нет привязанного приложения. Свяжитесь с Kate (администратором).",
+            )
+        if len(configured_apps) == 1:
+            bound_application_id = int(configured_apps[0][1])
+        else:
+            bound_application_id = None
         draft_token = app.state.store.create_report_draft(
             partner_id=partner["id"],
             period=selected_period,
@@ -1215,11 +1221,21 @@ def create_app(
             location_ids=parsed.location_ids,
             extraction_notes=parsed.notes,
             application_breakdown=application_breakdown,
+            application_id=bound_application_id,
         )
         # If the hourly worker has not populated this month yet, run the same
         # read-only comparison now so the partner sees a real result straight
         # after uploading the file.
         refresh_usage_before_review(partner["id"], selected_period)
+        if bound_application_id is None:
+            # Multi-app path: ask the partner which application the draft
+            # belongs to. The form lives at
+            # ``/submit/{token}/select-application/{draft_token}`` so the
+            # confirmation flow can stay one-step.
+            return RedirectResponse(
+                f"/submit/{token}/select-application/{draft_token}",
+                status_code=303,
+            )
         return RedirectResponse(
             f"/submit/{token}/review/{draft_token}",
             status_code=303,
@@ -1639,6 +1655,89 @@ def create_app(
             },
         )
 
+    @app.get(
+        "/submit/{token}/select-application/{draft_token}",
+        response_class=HTMLResponse,
+    )
+    def select_application_form(
+        request: Request,
+        token: str,
+        draft_token: str,
+    ):
+        """Render an APP picker when the partner has more than one configured.
+
+        A draft is in the "waiting for application" state when its
+        ``application_id`` is NULL. The partner must choose one of the
+        configured APPs before the review screen offers Confirm. We
+        resolve the candidate list from the partner's configured links so
+        the form can never offer an APP the partner doesn't actually own.
+        """
+        partner = app.state.store.partner_by_token(token)
+        if not partner:
+            raise HTTPException(404, "Ссылка партнёра не найдена")
+        draft = app.state.store.report_draft(draft_token, partner["id"])
+        if not draft:
+            raise HTTPException(404, "Черновик не найден")
+        if draft.get("application_id") is not None:
+            # Already chosen — skip the picker.
+            return RedirectResponse(
+                f"/submit/{token}/review/{draft_token}",
+                status_code=303,
+            )
+        links = app.state.store.application_links(partner["id"])
+        candidates = []
+        for link in links:
+            app_id = parse_application_id(link.get("url", ""))
+            if app_id is None:
+                continue
+            label = (
+                str(link.get("comment") or "").strip()
+                or KNOWN_APPLICATION_NAMES.get(int(app_id), "")
+                or str(link.get("url") or "")
+            )
+            candidates.append({"application_id": app_id, "label": label})
+        return TEMPLATES.TemplateResponse(
+            request,
+            "select_application.html",
+            context(
+                request,
+                language_override=partner_page_language(request, partner),
+                partner=dict(partner),
+                draft=draft,
+                candidates=candidates,
+            ),
+        )
+
+    @app.post(
+        "/submit/{token}/select-application/{draft_token}",
+        response_class=HTMLResponse,
+    )
+    def select_application_submit(
+        token: str,
+        draft_token: str,
+        application_id: int = Form(...),
+    ):
+        """Persist the partner's APP choice on the draft and head to review."""
+        partner = app.state.store.partner_by_token(token)
+        if not partner:
+            raise HTTPException(404, "Ссылка партнёра не найдена")
+        draft = app.state.store.report_draft(draft_token, partner["id"])
+        if not draft:
+            raise HTTPException(404, "Черновик не найден")
+        owned = {
+            parse_application_id(link.get("url", ""))
+            for link in app.state.store.application_links(partner["id"])
+        }
+        if application_id not in owned:
+            raise HTTPException(400, "Это приложение к вам не привязано.")
+        app.state.store.set_draft_application_by_token(
+            draft_token, partner["id"], application_id
+        )
+        return RedirectResponse(
+            f"/submit/{token}/review/{draft_token}",
+            status_code=303,
+        )
+
     @app.post("/submit/{token}/confirm/{draft_token}", response_class=HTMLResponse)
     def confirm_report(
         request: Request,
@@ -1782,6 +1881,12 @@ def create_app(
             attachment=draft["attachment"],
             claims=claims,
             application_breakdown=draft.get("application_breakdown", []),
+            # FR-04 / FR-10: persist the application that owns this draft so
+            # the new UNIQUE(partner_id, period, application_id) constraint
+            # can address a multi-APP partner correctly. A draft without an
+            # application (e.g. when an admin entered the report directly)
+            # still submits with application_id=None.
+            application_id=draft.get("application_id"),
         )
         app.state.store.delete_report_draft(draft_token, partner["id"])
         return TEMPLATES.TemplateResponse(
@@ -2210,11 +2315,7 @@ def create_app(
         # History tab can show either confirmed reports (default) or
         # bot-created drafts waiting for partner confirmation.
         history_view = view if view in ("reports", "drafts") else "reports"
-        drafts = (
-            app.state.store.drafts_for_partner(partner_id)
-            if history_view == "drafts"
-            else []
-        )
+        drafts = app.state.store.drafts_for_partner(partner_id)
         bot_username = (
             app.state.store.setting("telegram_bot_username")
             or os.getenv("TELEGRAM_BOT_USERNAME", "")

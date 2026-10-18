@@ -76,6 +76,32 @@ def send_message_reply(
     return call(token, "sendMessage", payload)
 
 
+def edit_message_text(
+    token: str,
+    chat_id: str | int,
+    message_id: int,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Edit the text of a bot-sent message in place.
+
+    Used by ``handle_callback(select_app)`` to swap the application
+    selection keyboard for the confirm/resend keyboard without sending
+    a second message. Telegram rejects edits to messages that were sent
+    more than 48 hours ago and to messages the bot did not send; the
+    caller is expected to fall back to ``send_message_reply`` when this
+    raises.
+    """
+    payload: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "message_id": int(message_id),
+        "text": text,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    return call(token, "editMessageText", payload)
+
+
 def get_file_path(token: str, file_id: str) -> str:
     """Return the file_path on Telegram servers for a file_id."""
     result = call(token, "getFile", {"file_id": file_id})

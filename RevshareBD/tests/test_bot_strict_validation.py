@@ -27,7 +27,6 @@ REJECTION_DESCRIPTIONS: dict[str, str] = {
     "locations_too_few": (
         "достаточного количества строк (нашёл только 1 клиента — отчёт обычно содержит больше)"
     ),
-    "turnover_zero": "ненулевого оборота",
 }
 
 REJECTION_FOLLOWUP = (
@@ -48,7 +47,7 @@ def expected_rejection_message(reasons: list[str]) -> str:
 @pytest.fixture
 def store_with_partner(tmp_path: Path) -> Store:
     store = Store(tmp_path / "test.db")
-    store.add_partner(
+    partner_id = store.add_partner(
         name="Test App",
         legal_name="",
         legal_country="",
@@ -62,6 +61,20 @@ def store_with_partner(tmp_path: Path) -> Store:
         currency="USD",
     )
     store.bind_telegram_chat("tkn-1", "100500")
+    # FR-04: a draft can only be saved when the partner has at least one
+    # configured application. Seed a default one so the existing
+    # rejection-path tests (which only assert the rejection reason, not
+    # the application flow) keep running cleanly.
+    store.replace_application_links(
+        partner_id,
+        [
+            {
+                "url": "https://app.alteg.io/app/999/",
+                "comment": "Default app",
+                "category": "",
+            }
+        ],
+    )
     return store
 
 
@@ -119,6 +132,7 @@ def _parsed(**overrides: Any) -> ParsedPartnerReport:
         location_ids=["loc-1", "loc-2"],
         location_source="column",
         notes=[],
+        period="2026-08",
         application_breakdown=[
             {"application_id": 1, "location_ids": ["loc-1", "loc-2"]}
         ],
@@ -291,13 +305,16 @@ def test_reject_locations_too_few(
     assert interactions[-1]["response"]["reasons"] == ["locations_too_few"]
 
 
-def test_reject_turnover_zero(
+def test_accept_zero_turnover_report(
     store_with_partner: Store,
     telegram_mocks,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """turnover=0 (with valid locations) → turnover_zero; mentions 'ненулевого оборота'."""
+    """FR-22/23: turnover=0 with valid locations is a valid report — the partner
+    may have clients this month but no payments (e.g. trials). The draft is
+    saved and the partner sees a confirmable summary.
+    """
     save_counter = _spy_save_bot_draft(store_with_partner)
     _invoke(
         store_with_partner,
@@ -311,16 +328,17 @@ def test_reject_turnover_zero(
         tmp_path,
     )
 
-    assert save_counter["count"] == 0
-    assert len(telegram_mocks["messages"]) == 1
-    text = telegram_mocks["messages"][0]["text"]
-    assert "ненулевого оборота" in text
-    assert text == expected_rejection_message(["turnover_zero"])
-    assert _drafts(store_with_partner) == []
-
+    # Draft IS saved — zero turnover is not a rejection reason.
+    assert save_counter["count"] == 1
+    # No rejection message was sent; the bot instead sent the summary reply.
+    assert len(telegram_mocks["messages"]) == 0
+    assert len(telegram_mocks["replies"]) == 1
+    reply_text = telegram_mocks["replies"][0]["text"]
+    assert "Принято" in reply_text
+    # Zero figures surface as 0, not None / "value not found".
+    assert "Оборот: 0" in reply_text or "Оборот: 0.0" in reply_text
     interactions = _bot_interactions(store_with_partner)
-    assert interactions[-1]["response"]["status"] == "rejected"
-    assert interactions[-1]["response"]["reasons"] == ["turnover_zero"]
+    assert interactions[-1]["response"]["status"] == "draft_saved"
 
 
 def test_reject_multiple_reasons_at_once(

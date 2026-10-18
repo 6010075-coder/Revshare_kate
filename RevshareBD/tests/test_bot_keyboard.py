@@ -154,7 +154,7 @@ def _seed_application_link(store: Store, partner_id: int) -> None:
         partner_id,
         [
             {
-                "url": "https://example.com/app",
+                "url": "https://app.alteg.io/app/999/",
                 "comment": "main",
                 "category": "",
             }
@@ -390,6 +390,7 @@ def test_keyboard_attached_on_success_summary(
             location_ids=["loc-1", "loc-2"],
             location_source="column",
             notes=[],
+            period="2026-08",
         ),
     )
     from revshare.bot import handle_partner_document
@@ -437,6 +438,7 @@ def test_summary_inline_keyboard_has_template_button(
             location_ids=["loc-1", "loc-2"],
             location_source="column",
             notes=[],
+            period="2026-08",
         ),
     )
     from revshare.bot import handle_partner_document
@@ -485,6 +487,7 @@ def test_keyboard_attached_on_rejection(
             location_ids=[],
             location_source="column",
             notes=["turnover_not_found"],
+            period="2026-08",
         ),
     )
     from revshare.bot import handle_partner_document

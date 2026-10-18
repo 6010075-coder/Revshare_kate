@@ -48,6 +48,7 @@
         <button class="button" type="submit">{{ t("approve_report") }}</button>
       </form>
       {% endif %}
+      <a class="button secondary" href="/admin/partners/{{ report.partner_id }}/edit?tab=history&amp;view=reports">{{ t("back_partner_reports") }}</a>
       <a class="button secondary" href="/?period={{ report.period }}">{{ t("back_dashboard") }}</a>
     </div>
   </section>
@@ -209,27 +210,33 @@
   </section>
   {% endif %}
 
-  <section class="card report-section">
-    <h2>{{ t("submission_history") }}</h2>
-    {% if report.status_log %}
-      {% for event in report.status_log %}
-      <div class="line-item">
-        <span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span>
-        <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
+  <section class="card report-section report-history-section" id="history">
+    <h2>{{ t("report_activity_title") }}</h2>
+    <p class="hint">{{ t("report_activity_intro") }}</p>
+    <div class="report-history-grid">
+      <div class="history-block">
+        <h3>{{ t("report_versions_title") }}</h3>
+        <p class="hint">{{ t("report_versions_hint") }}</p>
+        {% for version in report.versions %}
+        <details class="version-item" {% if loop.first %}open{% endif %}>
+          <summary><span>{{ t("report_version_number", number=version.version) }}{% if loop.first %} · {{ t("report_version_latest") }}{% endif %}</span><small>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</small></summary>
+          <dl class="version-values">
+            <div><dt>{{ t("turnover") }}</dt><dd>{{ "{:,.2f}".format(version.turnover).replace(",", " ") }} {{ version.currency }}</dd></div>
+            <div><dt>{{ t("clients") }}</dt><dd>{{ version.client_count }}</dd></div>
+            <div><dt>{{ t("report_version_rate") }}</dt><dd>{% if version.contract_rate is not none %}{{ (version.contract_rate * 100)|round(2) }}%{% else %}—{% endif %}</dd></div>
+            <div><dt>{{ t("partner_due") }}</dt><dd>{{ version.reported_share if version.reported_share is not none else "—" }} {{ version.currency }}</dd></div>
+          </dl>
+        </details>
+        {% else %}<p class="hint">{{ t("report_versions_empty") }}</p>{% endfor %}
       </div>
-      {% endfor %}
-    {% else %}
-      {% for version in report.versions %}
-      <div class="line-item">
-        <span>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</span>
-        <strong>
-          {{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}
-          {% set version_discrepancies = version.missing_active|length + version.unknown_locations|length + version.claims|length %}
-          {% if version_discrepancies %}<small>{{ t("history_discrepancies", count=version_discrepancies) }}</small>{% endif %}
-        </strong>
+      <div class="history-block">
+        <h3>{{ t("report_events_title") }}</h3>
+        <p class="hint">{{ t("report_events_hint") }}</p>
+        {% for event in report.status_log %}
+        <div class="history-event"><span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span><strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong></div>
+        {% else %}<p class="hint">{{ t("report_events_empty") }}</p>{% endfor %}
       </div>
-      {% endfor %}
-    {% endif %}
+    </div>
   </section>
 </div>
 {% endblock %}

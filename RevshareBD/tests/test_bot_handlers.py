@@ -20,7 +20,7 @@ from revshare.store import Store
 def store_with_partner(tmp_path: Path) -> Store:
     """Create a Store, add a partner and bind a Telegram chat to it."""
     store = Store(tmp_path / "test.db")
-    store.add_partner(
+    partner_id = store.add_partner(
         name="Test App",
         legal_name="",
         legal_country="",
@@ -34,6 +34,19 @@ def store_with_partner(tmp_path: Path) -> Store:
         currency="USD",
     )
     store.bind_telegram_chat("tkn-1", "100500")
+    # FR-04: a bot draft can only be saved when the partner has at least
+    # one configured application. Seed a default one so the existing
+    # happy-path tests can exercise save_bot_draft + confirm.
+    store.replace_application_links(
+        partner_id,
+        [
+            {
+                "url": "https://app.alteg.io/app/999/",
+                "comment": "Default app",
+                "category": "",
+            }
+        ],
+    )
     return store
 
 
@@ -247,6 +260,7 @@ def test_handle_partner_document_success_creates_draft_with_keyboard(
             location_ids=["loc-1", "loc-2"],
             location_source="column",
             notes=[],
+            period="2026-08",
         ),
     )
     handle_partner_document(
@@ -262,11 +276,13 @@ def test_handle_partner_document_success_creates_draft_with_keyboard(
     assert len(drafts) == 1
     assert drafts[0]["period"] == "2026-08"
     assert drafts[0]["turnover"] == 1000.0
+    assert drafts[0]["application_id"] == 999
     # Summary with inline keyboard was sent via send_message_reply
     assert len(telegram_mocks["replies"]) == 1
     reply = telegram_mocks["replies"][0]
     assert reply["chat_id"] == 100500
     assert "Принято" in reply["text"]
+    assert "Default app" in reply["text"]
     # First row of the inline keyboard still holds Confirm / Resend.
     keyboard = reply["reply_markup"]["inline_keyboard"][0]
     callback_data = {btn["text"]: btn["callback_data"] for btn in keyboard}
@@ -285,6 +301,7 @@ def test_handle_partner_document_success_creates_draft_with_keyboard(
     interactions = _bot_interactions(store_with_partner, "document")
     assert interactions[-1]["response"]["status"] == "draft_saved"
     assert interactions[-1]["response"]["draft_id"] == drafts[0]["id"]
+    assert interactions[-1]["response"]["application_id"] == 999
 
 
 # ----- handle_callback tests -----
@@ -452,7 +469,7 @@ def test_handle_callback_resend_at_boundary(
 def test_handle_callback_confirm_acknowledges(
     store_with_partner: Store, telegram_mocks
 ) -> None:
-    """Confirm callback → 'Отчёт получен, ожидает проверки' toast + same message."""
+    """Confirm callback → 'Отчёт подтверждён' toast + same message."""
     # Seed a draft for this partner/period so confirm has something to submit.
     from revshare.web import current_period
 
@@ -461,7 +478,7 @@ def test_handle_callback_confirm_acknowledges(
     draft_id = store_with_partner.save_bot_draft(
         partner_id=partner_id,
         period=period,
-        application_id=None,
+        application_id=999,
         attachment="seed.xlsx",
         turnover=100.0,
         currency="USD",
@@ -482,10 +499,12 @@ def test_handle_callback_confirm_acknowledges(
         update_id=24,
     )
     assert (
-        telegram_mocks["callbacks"][0]["text"] == "Отчёт получен, ожидает проверки."
+        telegram_mocks["callbacks"][0]["text"]
+        == "Отчёт подтверждён. Ожидает проверки администратором."
     )
     assert (
-        telegram_mocks["messages"][0]["text"] == "Отчёт получен, ожидает проверки."
+        telegram_mocks["messages"][0]["text"]
+        == "Отчёт подтверждён. Ожидает проверки администратором."
     )
     with store_with_partner.connect() as db:
         kind = db.execute(

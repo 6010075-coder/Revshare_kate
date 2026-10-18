@@ -344,25 +344,32 @@ def assess(
 
 
 def report_display_status(item: dict) -> str:
-    """Short status for the admin dashboard and report history."""
-    if item.get("report_source") == "manual":
-        return "manual"
-    if item.get("status") == "verified":
-        return "checked"
-    reason_keys = {
-        reason.get("key")
-        for reason in item.get("reasons") or []
-        if isinstance(reason, dict)
-    }
-    if reason_keys & {
-        "reason_no_registry",
-        "reason_duplicates",
-        "reason_missing_active",
-        "reason_unknown",
-        "reason_partner_discrepancies",
-    }:
-        return "discrepancies"
-    return "attention"
+    """Short status for the admin dashboard and report history.
+
+    Four agreed statuses:
+    * ``missing``            — no saved report for the period.
+    * ``partner_submitted``  — partner uploaded via the bot/site, admin not yet confirmed.
+    * ``admin_submitted``    — admin entered manually (or any non-bot source),
+                               admin not yet confirmed.
+    * ``confirmed``          — admin pressed "Confirm" (covers ``posted`` too —
+                               the queue is not a separate status).
+
+    Confirmation wins over the submission method: an approved report shows
+    "confirmed" regardless of where it came from. The caller is expected to
+    substitute ``"missing"`` when there is no report row for the period;
+    this helper only handles rows that exist.
+    """
+    workflow = item.get("workflow_status")
+    if workflow in ("approved", "posted"):
+        return "confirmed"
+    source = item.get("report_source") or "partner_file"
+    if source == "manual":
+        return "admin_submitted"
+    if source in ("partner_file", "partner_file_bot"):
+        return "partner_submitted"
+    # Defensive fallback for any future non-bot source: treat as admin-entered
+    # so we never silently re-classify a partner upload as admin work.
+    return "admin_submitted"
 
 
 def _reports_unique_includes_application_id(db) -> bool:
@@ -1009,6 +1016,26 @@ class Store:
                         "demo-partner",
                         0.30,
                         "USD",
+                    ),
+                )
+                # FR-04: the demo partner needs at least one configured
+                # application so the partner-side flow can land on the
+                # review screen instead of being blocked by the
+                # "no application" guard.
+                demo_id = db.execute(
+                    "SELECT id FROM partners WHERE token = 'demo-partner'"
+                ).fetchone()[0]
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO partner_applications
+                    (partner_id, url, comment, category)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        demo_id,
+                        "https://app.alteg.io/app/999/",
+                        "Demo app",
+                        "",
                     ),
                 )
             db.execute(
@@ -1797,7 +1824,14 @@ class Store:
                     datetime.now(UTC).isoformat(),
                 ),
             )
+            # FR-09/FR-10: a usage replace is metadata refresh, not a status
+            # change. Snapshot visible status before reassessing and restore
+            # ``status_updated_at`` for any report whose display+workflow did
+            # not change — matches ``submit_report`` so recheck-only paths
+            # never refresh the partner-visible "last change" timestamp.
+            before = self._status_snapshot(db, period)
             self._reassess_report(db, partner_id, period)
+            self._preserve_unchanged_status_times(db, period, before)
 
     def usage_import(self, partner_id: int, period: str) -> dict | None:
         with self.connect() as db:
@@ -1856,12 +1890,31 @@ class Store:
             history.append(item)
         return history
 
-    def report_id_for(self, partner_id: int, period: str) -> int | None:
+    def report_id_for(
+        self, partner_id: int, period: str, application_id: int | None = None
+    ) -> int | None:
+        """Look up the report row for a (partner, period, app) triple.
+
+        When ``application_id`` is provided the query is scoped to that
+        triple — important since the new UNIQUE constraint allows more
+        than one report per (partner, period) when several APPs are
+        configured. ``None`` falls back to the legacy (partner, period)
+        lookup for callers that don't care which app.
+        """
         with self.connect() as db:
-            row = db.execute(
-                "SELECT id FROM reports WHERE partner_id = ? AND period = ?",
-                (partner_id, period),
-            ).fetchone()
+            if application_id is None:
+                row = db.execute(
+                    "SELECT id FROM reports WHERE partner_id = ? AND period = ?",
+                    (partner_id, period),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    """
+                    SELECT id FROM reports
+                    WHERE partner_id = ? AND period = ? AND application_id = ?
+                    """,
+                    (partner_id, period, application_id),
+                ).fetchone()
         return int(row["id"]) if row else None
 
     def _log_report_event(
@@ -1887,6 +1940,34 @@ class Store:
                 created_at or datetime.now(UTC).isoformat(),
             ),
         )
+
+    def _status_snapshot(self, db: sqlite3.Connection, period: str) -> dict[int, tuple]:
+        """Remember visible report status and its timestamp before a recheck."""
+        rows = db.execute(
+            "SELECT id, status, workflow_status, report_source, reasons, status_updated_at "
+            "FROM reports WHERE period = ?", (period,)
+        ).fetchall()
+        result = {}
+        for row in rows:
+            item = dict(row)
+            item["reasons"] = json.loads(item["reasons"] or "[]")
+            result[item["id"]] = (
+                report_display_status(item), item["workflow_status"], item["status_updated_at"]
+            )
+        return result
+
+    def _preserve_unchanged_status_times(
+        self, db: sqlite3.Connection, period: str, before: dict[int, tuple]
+    ) -> None:
+        """A recheck alone is not a change to the report's displayed status."""
+        after = self._status_snapshot(db, period)
+        for report_id, (display, workflow, updated_at) in before.items():
+            current = after.get(report_id)
+            if current and current[:2] == (display, workflow):
+                db.execute(
+                    "UPDATE reports SET status_updated_at = ? WHERE id = ?",
+                    (updated_at, report_id),
+                )
 
     def _reassess_report(
         self, db: sqlite3.Connection, partner_id: int, period: str
@@ -2191,16 +2272,32 @@ class Store:
         location_ids: list[str],
         extraction_notes: list[str],
         application_breakdown: list[dict[str, object]] | None = None,
+        application_id: int | None = None,
     ) -> str:
         token = secrets.token_urlsafe(24)
         with self.connect() as db:
+            # FR-04: only one draft per (partner, period, app) — replace any
+            # previous one for the same triple. A partner re-uploading the
+            # same month for the same app overwrites the draft (mirrors the
+            # bot-side save_bot_draft behaviour) instead of tripping the
+            # UNIQUE(partner_id, period, application_id) partial index.
+            if application_id is None:
+                db.execute(
+                    "DELETE FROM report_drafts WHERE partner_id = ? AND period = ? AND application_id IS NULL",
+                    (partner_id, period),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM report_drafts WHERE partner_id = ? AND period = ? AND application_id = ?",
+                    (partner_id, period, application_id),
+                )
             db.execute(
                 """
                 INSERT INTO report_drafts
                 (token, partner_id, period, attachment, turnover, currency,
                 reported_share, location_ids, extraction_notes, application_breakdown,
-                created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                application_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token,
@@ -2213,6 +2310,7 @@ class Store:
                     json.dumps(location_ids),
                     json.dumps(extraction_notes),
                     json.dumps(application_breakdown or [], ensure_ascii=False),
+                    application_id,
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -2347,6 +2445,46 @@ class Store:
                 "SELECT id FROM report_drafts WHERE token = ?", (token,)
             ).fetchone()
         return int(row[0])
+
+    def set_draft_application(
+        self, draft_id: int, partner_id: int, application_id: int | None
+    ) -> bool:
+        """Bind an application to a bot-created draft.
+
+        Returns True if a row was updated, False if the draft does not exist
+        or belongs to a different partner. Used by the ``select_app`` callback
+        so a partner can pick the right application before confirming.
+        """
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE report_drafts
+                SET application_id = ?
+                WHERE id = ? AND partner_id = ?
+                """,
+                (application_id, draft_id, partner_id),
+            )
+        return cursor.rowcount > 0
+
+    def set_draft_application_by_token(
+        self, draft_token: str, partner_id: int, application_id: int
+    ) -> bool:
+        """Web-flavoured counterpart of ``set_draft_application``.
+
+        The web ``/select-application`` form uses the draft's URL-safe
+        token (not the integer ``id``) because that is what the partner
+        sees in their browser bar.
+        """
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE report_drafts
+                SET application_id = ?
+                WHERE token = ? AND partner_id = ?
+                """,
+                (application_id, draft_token, partner_id),
+            )
+        return cursor.rowcount > 0
 
     def drafts_for_partner(self, partner_id: int) -> list[dict]:
         """Return all bot-created drafts for a partner, newest first.
@@ -2537,10 +2675,23 @@ class Store:
             workflow_status = "needs_review" if review.level != "green" else "auto_checked"
         now = datetime.now(UTC).isoformat()
         with self.connect() as db:
-            existing = db.execute(
-                "SELECT id, application_id FROM reports WHERE partner_id = ? AND period = ?",
-                (partner_id, period),
-            ).fetchone()
+            # FR-04 / FR-10: with UNIQUE(partner_id, period, application_id)
+            # a (partner, period) pair can hold more than one report row
+            # (one per APP). Scope the "find existing" lookup by APP so we
+            # update the right row instead of touching the wrong APP's data.
+            if application_id is None:
+                existing = db.execute(
+                    "SELECT id, application_id FROM reports WHERE partner_id = ? AND period = ?",
+                    (partner_id, period),
+                ).fetchone()
+            else:
+                existing = db.execute(
+                    """
+                    SELECT id, application_id FROM reports
+                    WHERE partner_id = ? AND period = ? AND application_id = ?
+                    """,
+                    (partner_id, period, application_id),
+                ).fetchone()
             if existing and existing["application_id"] == application_id:
                 report_id = existing["id"]
                 db.execute("DELETE FROM report_clients WHERE report_id = ?", (report_id,))
@@ -2764,12 +2915,14 @@ class Store:
                             prior_claim["rowid"],
                         ),
                     )
+            before = self._status_snapshot(db, period)
             period_reports = db.execute(
                 "SELECT DISTINCT partner_id FROM reports WHERE period = ?", (period,)
             ).fetchall()
             for period_report in period_reports:
                 self._reassess_report(db, period_report["partner_id"], period)
             self._apply_cross_partner_conflicts(db, period)
+            self._preserve_unchanged_status_times(db, period, before)
         return int(report_id), review
 
     def submit_manual_report(
@@ -2961,10 +3114,11 @@ class Store:
             db.execute(
                 """
                 UPDATE reports
-                SET workflow_status = 'approved', approved_at = ?, approved_by = ?
+                SET workflow_status = 'approved', approved_at = ?, approved_by = ?,
+                    status_updated_at = CASE WHEN workflow_status != 'approved' THEN ? ELSE status_updated_at END
                 WHERE id = ?
                 """,
-                (now, approved_by, report_id),
+                (now, approved_by, now, report_id),
             )
             if report["workflow_status"] != "approved":
                 self._log_report_event(
@@ -3002,10 +3156,10 @@ class Store:
             updated = db.execute(
                 """
                 UPDATE reports
-                SET workflow_status = 'posted', posted_at = ?
+                SET workflow_status = 'posted', posted_at = ?, status_updated_at = ?
                 WHERE id = ? AND workflow_status = 'approved'
                 """,
-                (now, report_id),
+                (now, now, report_id),
             )
             if updated.rowcount != 1:
                 return False
@@ -3064,10 +3218,10 @@ class Store:
                 """
                 UPDATE reports
                 SET workflow_status = 'needs_review',
-                    approved_at = NULL, approved_by = NULL
+                    approved_at = NULL, approved_by = NULL, status_updated_at = ?
                 WHERE id = ?
                 """,
-                (report_id,),
+                (now, report_id),
             )
             self._log_report_event(
                 db,
@@ -3096,10 +3250,10 @@ class Store:
             db.execute(
                 """
                 UPDATE reports
-                SET workflow_status = 'approved', posted_at = NULL
+                SET workflow_status = 'approved', posted_at = NULL, status_updated_at = ?
                 WHERE id = ?
                 """,
-                (report_id,),
+                (now, report_id),
             )
             self._log_report_event(
                 db,

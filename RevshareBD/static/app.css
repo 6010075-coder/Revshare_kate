@@ -1269,3 +1269,20 @@ textarea { resize: vertical; }
   border-radius: 8px;
 }
 .invite-link-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Report lifecycle: drafts, submitted versions and activity. */
+.history-count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; padding: .1rem .4rem; margin-left: .25rem; border-radius: 999px; background: rgba(35,45,54,.1); font-size: .8em; }
+.report-history-section > .hint { margin-top: -.4rem; }
+.report-history-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; margin-top: 1.5rem; }
+.history-block { min-width: 0; }
+.history-block h3 { margin: 0 0 .4rem; }
+.history-block > .hint { margin: 0 0 1rem; }
+.version-item { border: 1px solid var(--line); border-radius: 10px; margin-bottom: .6rem; padding: .8rem 1rem; }
+.version-item summary { cursor: pointer; font-weight: 600; }
+.version-item summary small { color: var(--muted); font-weight: 400; margin-left: .5rem; }
+.version-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin: 1rem 0 0; }
+.version-values dt { color: var(--muted); font-size: .85rem; }
+.version-values dd { margin: .2rem 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.history-event { border-top: 1px solid var(--line); padding: .7rem 0; display: grid; gap: .2rem; }
+.history-event span { color: var(--muted); font-size: .85rem; }
+@media (max-width: 768px) { .report-history-grid { grid-template-columns: 1fr; gap: 1.5rem; } .history-toggle { flex-wrap: wrap; } }

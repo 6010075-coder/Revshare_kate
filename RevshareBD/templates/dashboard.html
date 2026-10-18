@@ -99,12 +99,12 @@
         </td>
         <td>
           {% if item.report_id %}
-            <span class="status {{ 'green' if item.display_status == 'checked' else 'yellow' if item.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+            {# Four agreed statuses: green = confirmed by admin; yellow = partner submitted and waiting for admin; muted = report added by admin without confirmation. #}
+            <span class="status {{ 'green' if item.display_status == 'confirmed' else 'yellow' if item.display_status == 'partner_submitted' else 'muted' }}">
               {{ t("report_status_" + item.display_status) }}
             </span>
-            {% if item.workflow_status in ['approved', 'posted'] %}<small>{{ t("workflow_" + item.workflow_status) }}</small>{% endif %}
           {% else %}
-            <span class="status muted">{{ t("not_submitted") }}</span>
+            <span class="status muted">{{ t("report_status_missing") }}</span>
           {% endif %}
         </td>
         <td>

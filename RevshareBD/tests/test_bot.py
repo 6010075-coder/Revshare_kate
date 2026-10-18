@@ -92,7 +92,7 @@ def test_digest_start_requires_allowed_telegram_user(tmp_path, monkeypatch):
 
 
 def _make_bound_partner(store: Store, chat_id: str = "777", token: str = "cb-token"):
-    store.add_partner(
+    partner_id = store.add_partner(
         name="Confirm App",
         legal_name="",
         legal_country="",
@@ -106,6 +106,18 @@ def _make_bound_partner(store: Store, chat_id: str = "777", token: str = "cb-tok
         currency="USD",
     )
     store.bind_telegram_chat(token, chat_id)
+    # FR-04: a confirm-bound draft needs an application. Seed one that the
+    # tests can reference by its numeric id.
+    store.replace_application_links(
+        partner_id,
+        [
+            {
+                "url": "https://app.alteg.io/app/999/",
+                "comment": "Default app",
+                "category": "",
+            }
+        ],
+    )
     return store.partner_by_chat_id(chat_id), token
 
 
@@ -116,7 +128,7 @@ def test_bot_confirm_creates_report_and_removes_draft(tmp_path, monkeypatch):
     draft_id = store.save_bot_draft(
         partner_id=partner["id"],
         period="2026-08",
-        application_id=None,
+        application_id=999,
         attachment="confirm-app_2026-08_1_report.xlsx",
         turnover=1500.0,
         currency="USD",
@@ -193,7 +205,7 @@ def test_bot_confirm_creates_report_and_removes_draft(tmp_path, monkeypatch):
     assert log_row["report_id"] is not None
     assert log_row["partner_id"] == partner["id"]
 
-    assert any("ожидает проверки" in text for _, text in sends)
+    assert any("Ожидает проверки администратором" in text for _, text in sends)
 
 
 def test_bot_confirm_rejects_foreign_draft(tmp_path, monkeypatch):

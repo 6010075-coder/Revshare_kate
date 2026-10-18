@@ -69,6 +69,15 @@ class ParsedPartnerReport:
     all_location_ids: list[str] = field(default_factory=list)
     report_payment_statuses: dict[str, str] = field(default_factory=dict)
     report_status_details: dict[str, str] = field(default_factory=dict)
+    # FR-01..08: the first-sheet parser populates these new attributes.
+    # ``period`` is the reporting month parsed from B3 of the first sheet
+    # (``YYYY-MM``); ``error`` is a stable code when parsing cannot be
+    # trusted (``period_not_found`` / ``table_structure_not_found`` /
+    # ``rows_with_missing_amount``); ``error_rows`` lists 1-based source
+    # row numbers in the original workbook for the failing rows.
+    period: str | None = None
+    error: str | None = None
+    error_rows: list[int] = field(default_factory=list)
 
 
 def _parse_amount(raw: str) -> float | None:
@@ -223,266 +232,269 @@ def _standard_partner_workbook(
     period: str | None = None,
     default_currency: str | None = None,
 ) -> ParsedPartnerReport | None:
-    """Read the recommended Integration Hub partner report.
+    """Read the Integration Hub 10-column partner report.
 
-    Partners fill the input columns; formula cells may have no cached values,
-    so totals are calculated here from amount, FX and contractual rate.
-
-    ``default_currency`` is the partner's contractual report currency. It is
-    used as the fallback when no currency hint is found in the header row
-    (the new 9-column template states it in the header block, not in a
-    parenthetical inside a column header).
+    FR-01..08 contract:
+    * Reads ONLY ``workbook.worksheets[0]`` (FR-01) regardless of title,
+      visibility or whether the sheet looks like a sample. Period/skip
+      token filtering is intentionally not applied to this entry point;
+      it remains in ``_rows_from_file`` for the legacy CSV path.
+    * The reporting month is parsed from B3 of the first sheet (FR-02);
+      the ``period`` argument is treated as a hint, not a source of truth.
+    * Row 10 is the column header row, data starts at row 11 (FR-03).
+      Rows 1..9 are never interpreted as clients or headers.
+    * The data block extends from row 11 to the row whose first
+      non-empty cell contains "ИТОГО" / "TOTAL" / "Total" (FR-05).
+    * Empty reports return ``turnover=0.0`` and ``location_ids=[]`` —
+      a valid, confirmed empty result (FR-06).
+    * Rows whose column E is empty or unparseable are listed in
+    ``error_rows`` and the report is marked ``rows_with_missing_amount``
+    so the partner must fix the file before it can be confirmed (FR-07).
+    * Totals are computed from the raw ``amount * fx * rate`` chain,
+      not from cached Excel formula values — the workbook is opened
+      with ``data_only=False`` (FR-08).
     """
     if path.suffix.lower() not in {".xlsx", ".xlsm"}:
         return None
-    workbook = load_workbook(path, data_only=True, read_only=True)
-    wanted = period_sheet_titles(period)
-
-    def _sheet_title_tokens(sheet) -> set[str]:
-        # Use both the full normalised title and its first token so
-        # period-month matches like "Report (EN) — September 2026" still
-        # hit the wanted set ("september 2026") via substring logic.
-        return {token for token in " ".join(sheet.title.split()).casefold().split(" — ")}
-
-    def _is_skip(sheet) -> bool:
-        return any(
-            token in " ".join(sheet.title.split()).casefold()
-            for token in SHEET_SKIP_TOKENS
-        )
-
-    def _matches_period(sheet) -> bool:
-        if not wanted:
-            return True
-        title_norm = " ".join(sheet.title.split()).casefold()
-        # Substring match against any period title token ("september 2026",
-        # "2026-09", etc.) — handles titles like "Report (EN) — September
-        # 2026" that embed the month instead of being exactly it.
-        return any(want in title_norm for want in wanted)
-
-    sheets = [
-        sheet
-        for sheet in workbook.worksheets
-        if _matches_period(sheet) and not _is_skip(sheet)
-    ]
-    if not sheets:
-        # Period filter matched nothing — fall back to any sheet that
-        # doesn't look like a sample. This preserves the old behaviour
-        # for partner-submitted files whose sheet title may not embed
-        # the reporting month.
-        sheets = [sheet for sheet in workbook.worksheets if not _is_skip(sheet)]
-    for sheet in sheets:
-        rows = _sheet_rows(sheet)
-        header_index = None
-        columns: dict[str, int] = {}
-        for index, row in enumerate(rows[:20]):
-            for column, cell in enumerate(row):
-                folded = " ".join(cell.split()).casefold()
-                if _is_location_header(cell):
-                    columns["location"] = column
-                if _is_application_id_header(cell):
-                    columns["application_id"] = column
-                elif _is_application_header(cell):
-                    columns["application"] = column
-                if _is_client_header(cell) and "client" not in columns:
-                    columns["client"] = column
-                if (
-                    _is_subscription_period_header(cell)
-                    and "subscription_period" not in columns
-                ):
-                    columns["subscription_period"] = column
-                if (
-                    _is_settlement_currency_header(cell)
-                    and "settlement_currency" not in columns
-                ):
-                    columns["settlement_currency"] = column
-                if (
-                    "received by partner" in folded
-                    or "получено партнёром" in folded
-                ) and "report currency" not in folded and "валюта отчёта" not in folded:
-                    columns["amount"] = column
-                if folded.startswith("payment currency") or folded.startswith(
-                    "валюта платежа"
-                ):
-                    columns["currency"] = column
-                if "monthly avg rate" in folded or "среднемес. курс" in folded:
-                    columns["fx"] = column
-                if (
-                    ("altegio" in folded and "rate" in folded)
-                    or ("ставка" in folded and "altegio" in folded)
-                ):
-                    columns["rate"] = column
-            if {"location", "amount", "currency"} <= columns.keys():
-                header_index = index
-                break
-        if header_index is None:
-            continue
-
-        location_ids: list[str] = []
-        turnover = 0.0
-        share = 0.0
-        used_rows = 0
-        skipped_fx = 0
-        report_currency = (
-            (default_currency or "").upper() if default_currency else "USD"
-        )
-        application_groups: dict[str, dict[str, object]] = {}
-        header_text = " ".join(rows[header_index])
-        report_match = re.search(
-            r"\((USD|EUR|AMD|RUB|KZT|AED|TRY|UAH|GBP|PLN|CZK)"
-            r"(?:,\s*(?:report currency|валюта отч[её]та))?\)",
-            header_text,
-            re.I,
-        )
-        if report_match:
-            report_currency = report_match.group(1).upper()
-
-        for row in rows[header_index + 1 :]:
-            line = " ".join(row)
-            if _is_total_line(line):
-                break
-            location_cell = (
-                _plain_id_cell(row[columns["location"]])
-                if columns["location"] < len(row)
-                else ""
-            )
-            location_match = LOCATION_COLUMN_ID_RE.search(location_cell)
-            if not location_match:
-                continue
-            current_location = location_match.group(1)
-            location_ids.append(current_location)
-            application_ref = ""
-            for application_column in ("application_id", "application"):
-                if application_column in columns and columns[application_column] < len(row):
-                    application_ref = row[columns[application_column]].strip()
-                    if application_ref:
-                        break
-            client_name = ""
-            if "client" in columns and columns["client"] < len(row):
-                client_name = row[columns["client"]].strip()
-            subscription_period = ""
-            if (
-                "subscription_period" in columns
-                and columns["subscription_period"] < len(row)
-            ):
-                subscription_period = row[columns["subscription_period"]].strip()
-            settlement_currency = ""
-            if (
-                "settlement_currency" in columns
-                and columns["settlement_currency"] < len(row)
-            ):
-                settlement_currency = row[columns["settlement_currency"]].strip()
-            group_key = application_ref or "__unassigned__"
-            group = application_groups.setdefault(
-                group_key,
-                {
-                    "application_ref": application_ref,
-                    "turnover": 0.0,
-                    "reported_share": 0.0,
-                    "currency": report_currency,
-                    "location_ids": [],
-                    "line_items": [],
-                },
-            )
-            group["location_ids"].append(current_location)
-            amount_cell = row[columns["amount"]] if columns["amount"] < len(row) else ""
-            amount = _signed_value_from_cell(amount_cell)
-            if amount is None:
-                continue
-            currency_cell = (
-                row[columns["currency"]] if columns["currency"] < len(row) else ""
-            )
-            payment_currency = _currency_from_text(currency_cell, report_currency)
-            fx = 1.0
-            if payment_currency != report_currency:
-                fx_column = columns.get("fx")
-                fx_cell = (
-                    row[fx_column]
-                    if fx_column is not None and fx_column < len(row)
-                    else ""
-                )
-                fx = _value_from_cell(fx_cell) or 0.0
-                if not fx:
-                    skipped_fx += 1
-                    continue
-            converted = amount * fx
-            turnover += converted
-            rate = None
-            if "rate" in columns and columns["rate"] < len(row):
-                rate = _value_from_cell(row[columns["rate"]])
-            row_share: float | None = None
-            if rate is not None:
-                share += converted * rate
-                row_share = round(converted * rate, 2)
-            group["turnover"] = round(float(group["turnover"]) + converted, 2)
-            if row_share is not None:
-                group["reported_share"] = round(
-                    float(group["reported_share"]) + row_share, 2
-                )
-            line_items = group["line_items"]
-            assert isinstance(line_items, list)
-            line_items.append(
-                {
-                    "location_id": current_location,
-                    "client_name": client_name,
-                    "subscription_period": subscription_period,
-                    "payment_currency": payment_currency,
-                    "amount_in_payment_currency": round(amount, 2),
-                    "fx_rate": round(fx, 6),
-                    "settlement_currency": settlement_currency or None,
-                    "amount_in_report_currency": round(converted, 2),
-                    "altegio_rate": rate,
-                    "due_to_altegio": row_share,
-                }
-            )
-            used_rows += 1
-
-        if not location_ids:
-            continue
-        notes = ["recommended_template"]
-        if skipped_fx:
-            notes.append("rows_missing_fx")
-        if not used_rows:
-            notes.append("turnover_not_found")
-        application_breakdown = []
-        if ("application" in columns or "application_id" in columns) and application_groups:
-            notes.append("application_column")
-            if "__unassigned__" in application_groups:
-                notes.append("application_not_identified")
-            for group in application_groups.values():
-                application_breakdown.append(
-                    {
-                        **group,
-                        "location_ids": _unique(group["location_ids"]),
-                    }
-                )
-        else:
-            # No application grouping column found — still surface per-row
-            # data so the partner's per-customer line items survive the
-            # round-trip even when only location IDs are available.
-            application_breakdown = [
-                {
-                    "application_ref": "",
-                    "turnover": round(turnover, 2),
-                    "reported_share": round(share, 2) if share else None,
-                    "currency": report_currency,
-                    "location_ids": _unique(location_ids),
-                    "line_items": [
-                        item
-                        for group in application_groups.values()
-                        for item in group["line_items"]
-                    ],
-                }
-            ]
+    try:
+        workbook = load_workbook(path, data_only=False, read_only=True)
+    except Exception:  # noqa: BLE001 — intake must not crash the month run
         return ParsedPartnerReport(
-            turnover=round(turnover, 2) if used_rows else None,
+            turnover=None,
+            currency=None,
+            reported_share=None,
+            location_ids=[],
+            location_source="recommended_template",
+            notes=["workbook_unreadable"],
+            error="table_structure_not_found",
+        )
+    if not workbook.worksheets:
+        return ParsedPartnerReport(
+            turnover=None,
+            currency=None,
+            reported_share=None,
+            location_ids=[],
+            location_source="recommended_template",
+            notes=["workbook_has_no_sheets"],
+            error="table_structure_not_found",
+        )
+    sheet = workbook.worksheets[0]
+    rows = _sheet_rows(sheet)
+    # ``_row_padding`` returns ``rows`` left-padded with empty rows so that
+    # ``rows[2]`` always corresponds to B3 of the workbook. openpyxl in
+    # read-only mode can hand us a sparse row list when leading rows are
+    # blank or only contain merged-cell anchors.
+    if len(rows) < 1:
+        return ParsedPartnerReport(
+            turnover=None,
+            currency=None,
+            reported_share=None,
+            location_ids=[],
+            location_source="recommended_template",
+            notes=["empty_first_sheet"],
+            error="table_structure_not_found",
+        )
+
+    def _row(idx: int) -> list[str]:
+        if idx < len(rows):
+            return rows[idx]
+        return [""] * 10
+
+    period_cell = _row(2)[1] if len(_row(2)) > 1 else ""
+    parsed_period = _parse_period_from_b3(period_cell)
+    notes: list[str] = ["recommended_template"]
+    if parsed_period is None:
+        notes.append("period_not_found")
+    # Currency: B5 is authoritative, but fall back to the partner's
+    # contractual ``default_currency`` so legacy files keep parsing.
+    currency_cell = _row(4)[1] if len(_row(4)) > 1 else ""
+    report_currency = _currency_from_text(currency_cell, None)
+    if report_currency is None and default_currency:
+        report_currency = default_currency.upper()
+    if report_currency is None:
+        report_currency = "USD"
+
+    # Row 10 must look like the 10-column template header. We anchor on
+    # the Location ID column (A) and the "Received by partner (in payment
+    # currency)" column (E) — both must be recognisable.
+    header_row = _row(9)
+    header_seen_location = False
+    header_seen_amount = False
+    for cell in header_row:
+        if _is_location_header(cell):
+            header_seen_location = True
+            continue
+        folded = " ".join(cell.split()).casefold()
+        if (
+            "received by partner" in folded
+            or "получено партнёром" in folded
+        ) and "report currency" not in folded and "валюта отчёта" not in folded:
+            header_seen_amount = True
+    if not (header_seen_location and header_seen_amount):
+        return ParsedPartnerReport(
+            turnover=None,
             currency=report_currency,
-            reported_share=round(share, 2) if share else None,
+            reported_share=None,
+            location_ids=[],
+            location_source="recommended_template",
+            notes=notes + ["table_structure_not_found"],
+            period=parsed_period,
+            error="table_structure_not_found",
+        )
+
+    line_items: list[dict[str, object]] = []
+    location_ids: list[str] = []
+    error_rows: list[int] = []
+    total_turnover = 0.0
+    total_reported_share = 0.0
+    used_rows = 0
+
+    for offset in range(10, len(rows) + 10):
+        row = _row(offset)
+        # ``row_number`` is 1-based for the source workbook — used in
+        # ``error_rows`` so partners can locate the offending line.
+        row_number = offset + 1
+        # Treat every cell as plain text so openpyxl-formula strings
+        # (``"=E11*F11"``) and merged-cell sentinels are handled the
+        # same as user-typed values.
+        cells = row + [""] * (10 - len(row))
+        line = " ".join(cells).strip()
+        if not line:
+            # Blank rows are not clients — they are skipped silently per
+            # FR-05 so partners can leave gaps for readability.
+            continue
+        if _is_total_line(line):
+            break
+
+        location_raw = _plain_id_cell(cells[0])
+        location_match = LOCATION_COLUMN_ID_RE.search(location_raw)
+        client_name = cells[1].strip()
+        subscription_period = cells[2].strip()
+        payment_currency = _currency_from_text(cells[3], report_currency)
+        amount_cell = cells[4]
+        amount = _signed_value_from_cell(amount_cell)
+        fx_cell = cells[5]
+        fx_value = _value_from_cell(fx_cell)
+        settlement_currency = cells[6].strip() or None
+        rate_cell = cells[8]
+        rate_value = _value_from_cell(rate_cell)
+
+        has_client_marker = bool(location_match) or bool(client_name)
+        if amount is None:
+            if has_client_marker:
+                # FR-07: client row with missing/garbled amount — record
+                # 1-based row number and flag the report as not confirmable.
+                error_rows.append(row_number)
+            continue
+
+        location_id = location_match.group(1) if location_match else ""
+        if location_match:
+            location_ids.append(location_id)
+
+        # Compute ``converted`` from raw data — never from cached Excel
+        # formula values. When amount == 0 the spec allows fx to be
+        # missing; the conversion result is still 0.
+        if amount == 0:
+            converted = 0.0
+            fx_for_record: float | None = fx_value
+        elif payment_currency == report_currency:
+            converted = round(amount, 2)
+            fx_for_record = fx_value if fx_value is not None else 1.0
+        else:
+            if not fx_value:
+                # Different payment/report currency but no FX — silently skip
+                # the row. ``error_rows`` is reserved for the column-E
+                # contract per FR-07.
+                continue
+            converted = round(amount * fx_value, 2)
+            fx_for_record = fx_value
+
+        if rate_value is not None:
+            row_share = round(converted * rate_value, 2)
+        else:
+            row_share = None
+
+        total_turnover += converted
+        if row_share is not None:
+            total_reported_share += row_share
+        used_rows += 1
+        line_items.append(
+            {
+                "location_id": location_id,
+                "client_name": client_name,
+                "subscription_period": subscription_period,
+                "payment_currency": payment_currency,
+                "amount_in_payment_currency": round(amount, 2),
+                "fx_rate": round(fx_for_record, 6) if fx_for_record is not None else None,
+                "settlement_currency": settlement_currency,
+                "amount_in_report_currency": converted,
+                "altegio_rate": rate_value,
+                "due_to_altegio": row_share,
+            }
+        )
+
+    if error_rows:
+        # FR-07: report cannot be confirmed while a client row lacks a
+        # parseable amount. Return the bad rows so the partner can fix
+        # them; downstream code MUST treat ``error`` as a hard signal.
+        notes.append("rows_with_missing_amount")
+        return ParsedPartnerReport(
+            turnover=None,
+            currency=report_currency,
+            reported_share=None,
             location_ids=_unique(location_ids),
             location_source="recommended_template",
             notes=notes,
-            application_breakdown=application_breakdown,
+            period=parsed_period,
+            error="rows_with_missing_amount",
+            error_rows=error_rows,
+            application_breakdown=[],
         )
-    return None
+
+    if not used_rows:
+        # FR-06: header is valid, period is recognised (or absent), and
+        # every data row is empty or only contains template formulas.
+        # Empty is a valid, confirmed report.
+        notes.append("empty_report")
+        if parsed_period is not None:
+            notes.append(f"period:{parsed_period}")
+        return ParsedPartnerReport(
+            turnover=0.0,
+            currency=report_currency,
+            reported_share=0.0,
+            location_ids=[],
+            location_source="empty_report",
+            notes=notes,
+            period=parsed_period,
+            application_breakdown=[],
+        )
+
+    if parsed_period is not None:
+        notes.append(f"period:{parsed_period}")
+    application_breakdown = [
+        {
+            "application_ref": "",
+            "turnover": round(total_turnover, 2),
+            "reported_share": (
+                round(total_reported_share, 2) if total_reported_share else None
+            ),
+            "currency": report_currency,
+            "location_ids": _unique(location_ids),
+            "line_items": line_items,
+        }
+    ]
+    return ParsedPartnerReport(
+        turnover=round(total_turnover, 2),
+        currency=report_currency,
+        reported_share=(
+            round(total_reported_share, 2) if total_reported_share else None
+        ),
+        location_ids=_unique(location_ids),
+        location_source="recommended_template",
+        notes=notes,
+        period=parsed_period,
+        application_breakdown=application_breakdown,
+    )
 
 
 def _structured_application_report(
@@ -806,7 +818,17 @@ def parse_partner_report(
 ) -> ParsedPartnerReport:
     standard = _standard_partner_workbook(path, period, default_currency=default_currency)
     if standard is not None:
-        if standard.reported_share is None and standard.turnover is not None and rate is not None:
+        # FR-01/03/07: when the first sheet reports a structural or
+        # row-level error we return that signal without falling through
+        # to legacy CSV / free-form parsing — the partner must fix the
+        # workbook and re-upload.
+        if standard.error is not None and standard.turnover is None:
+            return standard
+        if (
+            standard.reported_share is None
+            and standard.turnover is not None
+            and rate is not None
+        ):
             standard.reported_share = round(standard.turnover * rate, 2)
             standard.notes.append("share_calculated")
         return _apply_report_annotations(standard, path, period)
@@ -1147,6 +1169,57 @@ def _is_total_line(text: str) -> bool:
 
 def _is_tabular(rows: list[list[str]]) -> bool:
     return any(len([cell for cell in row if cell.strip()]) > 1 for row in rows)
+
+
+def _parse_period_from_b3(raw: str) -> str | None:
+    """Recognise the reporting month written in B3 of the partner workbook.
+
+    Accepts ``YYYY-MM`` (already canonical), ``MM.YYYY`` / ``MM/YYYY`` /
+    ``YYYY/MM`` numeric forms, and the month-name variants used by the
+    Integration Hub template in every supported language (``September
+    2026``, ``Сентябрь 2026``, ``Вересень 2026`` …). Returns the canonical
+    ``YYYY-MM`` representation, or ``None`` if no month is found.
+    """
+    from revshare.i18n import TRANSLATIONS
+
+    text = " ".join((raw or "").split()).strip()
+    if not text:
+        return None
+    # Fast path: already ``YYYY-MM`` (or ``YYYY-M``).
+    checked = valid_period(text)
+    if checked:
+        return checked
+    # Numeric forms: 09.2026, 9/2026, 2026/09. Build a candidate set of
+    # ``(year, month)`` pairs and reuse ``valid_period`` to normalise.
+    numeric_candidates: list[tuple[int, int]] = []
+    for match in re.finditer(r"(\d{4})[./-](\d{1,2})|(\d{1,2})[./-](\d{4})", text):
+        if match.group(1) and match.group(2):
+            numeric_candidates.append((int(match.group(1)), int(match.group(2))))
+        elif match.group(3) and match.group(4):
+            numeric_candidates.append((int(match.group(4)), int(match.group(3))))
+    for year, month in numeric_candidates:
+        candidate = valid_period(f"{year:04d}-{month:02d}")
+        if candidate:
+            return candidate
+    # Month-name forms: take the last four-digit year from the cell so the
+    # parser still works when the partner writes "Сентябрь 2026 г.".
+    year_match = re.search(r"(\d{4})", text)
+    if year_match:
+        year = int(year_match.group(1))
+        # Compare the cell (without the year) against every supported
+        # language's month_XX name — full and 3-letter abbreviation.
+        cell_no_year = text[: year_match.start()] + text[year_match.end() :]
+        folded_no_year = cell_no_year.casefold().strip().rstrip("г.")
+        for language in TRANSLATIONS.values():
+            for month_num in range(1, 13):
+                name = str(language.get(f"month_{month_num:02d}") or "").strip()
+                if not name:
+                    continue
+                if folded_no_year in {name.casefold(), name[:3].casefold()}:
+                    candidate = valid_period(f"{year:04d}-{month_num:02d}")
+                    if candidate:
+                        return candidate
+    return None
 
 
 def period_sheet_titles(period: str | None) -> set[str]:

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ t("select_application_title") }} · {{ partner.name }}{% endblock %}
+{% block content %}
+<section class="form-shell">
+  <div class="form-intro">
+    <p class="eyebrow">{{ t("select_application_eyebrow") }}</p>
+    <h1>{{ partner.name }}</h1>
+    <p>{{ t("select_application_intro", period=draft.period) }}</p>
+  </div>
+
+  {% if not candidates %}
+  <div class="card">
+    <p class="notice error">
+      {{ t("no_application_message") }}
+    </p>
+    <a class="button secondary" href="/submit/{{ partner.token }}">{{ t("back") }}</a>
+  </div>
+  {% else %}
+  <form method="post" action="/submit/{{ partner.token }}/select-application/{{ draft.token }}" class="card form-card">
+    <fieldset class="application-picker">
+      <legend>{{ t("pick_application_legend") }}</legend>
+      {% for candidate in candidates %}
+      <label class="application-picker-row">
+        <input
+          type="radio"
+          name="application_id"
+          value="{{ candidate.application_id }}"
+          required
+          {% if loop.first %}checked{% endif %}
+        >
+        <span>{{ candidate.label }}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+    <button class="button full" type="submit">{{ t("continue_to_review") }}</button>
+    <p class="privacy">{{ t("select_application_hint") }}</p>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

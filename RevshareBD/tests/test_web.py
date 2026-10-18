@@ -184,72 +184,120 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
 
 
 def test_parse_recommended_partner_report_without_cached_formulas(tmp_path: Path):
+    """10-column workbook with formulas that are NOT cached → parser computes
+    turnover/share from raw E/F/I values (FR-08). Headers in row 10, period
+    in B3.
+    """
+    from revshare.report_template import (
+        EXPECTED_HEADERS_EN,
+        FIRST_DATA_ROW,
+    )
+
     path = tmp_path / "partner-report.xlsx"
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Report (EN)"
-    sheet.append(["Integration Hub Partner Report"])
-    sheet.append([])
-    sheet.append(
-        [
-            "Altegio location ID",
-            "Client name",
-            "Paid subscription period",
-            "Payment currency",
-            "Received by partner (in payment currency)",
-            "Monthly avg rate to USD",
-            "Received by partner (USD, report currency)",
-            "Altegio rate",
-            "Due to Altegio (USD)",
-        ]
-    )
-    sheet.append([312045, "Beauty Loft", "Monthly", "USD", 40, 1, "=E4*F4", 0.2, "=G4*H4"])
-    sheet.append([215890, "Atlas", "Monthly", "EUR", 50, 1.1593, "=E5*F5", 0.2, "=G5*H5"])
-    sheet.append(["TOTAL in report currency (USD)", "", "", "", "", "", "=SUM(G4:G5)", "", "=SUM(I4:I5)"])
+    # B2 — partner name, B3 — period, B5 — currency (FR-02 / contract).
+    sheet.cell(row=2, column=2, value="Acme Bookings, Inc.")
+    sheet.cell(row=3, column=2, value="September 2026")
+    sheet.cell(row=5, column=2, value="USD")
+    for column, header in enumerate(EXPECTED_HEADERS_EN, start=1):
+        sheet.cell(row=10, column=column, value=header)
+    # Row 11+ — clients. E is amount, F is FX, G is settlement, I is rate.
+    # G is *computed* via =E*F (formula) and I via =G*H (formula). The
+    # parser must NOT read these cached values — only raw E/F/I.
+    sheet.cell(row=11, column=1, value=312045)
+    sheet.cell(row=11, column=2, value="Beauty Loft")
+    sheet.cell(row=11, column=3, value="Monthly")
+    sheet.cell(row=11, column=4, value="USD")
+    sheet.cell(row=11, column=5, value=40)
+    sheet.cell(row=11, column=6, value=1)
+    sheet.cell(row=11, column=7, value="=E11*F11")  # cached or not, parser
+    sheet.cell(row=11, column=9, value=0.2)
+    sheet.cell(row=11, column=10, value="=G11*H11")
+    sheet.cell(row=12, column=1, value=215890)
+    sheet.cell(row=12, column=2, value="Atlas")
+    sheet.cell(row=12, column=3, value="Monthly")
+    sheet.cell(row=12, column=4, value="EUR")
+    sheet.cell(row=12, column=5, value=50)
+    sheet.cell(row=12, column=6, value=1.1593)
+    sheet.cell(row=12, column=7, value="=E12*F12")
+    sheet.cell(row=12, column=9, value=0.2)
+    sheet.cell(row=12, column=10, value="=G12*H12")
+    sheet.cell(row=13, column=1, value="TOTAL in report currency (USD)")
     workbook.save(path)
 
     parsed = parse_partner_report(path, rate=0.2, default_currency="USD")
+    assert parsed.period == "2026-09"
     assert parsed.location_ids == ["312045", "215890"]
     assert parsed.location_source == "recommended_template"
-    assert parsed.turnover == 97.97
-    assert parsed.reported_share == 19.59
+    # 40 USD (no conversion) + 50 EUR * 1.1593 = 40 + 57.965 ≈ 97.97
+    assert parsed.turnover == round(40 + 50 * 1.1593, 2)
+    # Each row's due = converted * 0.2 → (40 * 0.2) + (50 * 1.1593 * 0.2)
+    expected_share = round(40 * 0.2 + 50 * 1.1593 * 0.2, 2)
+    assert parsed.reported_share == expected_share
     assert parsed.currency == "USD"
-    assert parsed.notes == ["recommended_template"]
+    assert parsed.error is None
+    # The line_items must come from the standard 10-column parser, not the
+    # legacy 9-column one.
+    assert parsed.application_breakdown, "application_breakdown missing"
+    breakdown = parsed.application_breakdown[0]
+    assert breakdown["location_ids"] == ["312045", "215890"]
+    # Total label marks the row where the parser stops — the parser must not
+    # include the "TOTAL ..." line as a client.
+    assert all(
+        item["location_id"] != "" for item in breakdown.get("line_items", [])
+    )
+    # Sanity: the FIRST_DATA_ROW constant is where data starts.
+    assert FIRST_DATA_ROW == 11
 
 
-def test_parse_monthly_workbook_with_float_ids(tmp_path: Path):
+def test_parse_first_sheet_with_float_ids(tmp_path: Path):
+    """The parser reads only the FIRST sheet of the workbook (FR-01).
+
+    The other sheets — even when their titles look like "Июль 2026" —
+    must be ignored. Period comes from B3 of the first sheet, and
+    Location IDs written as floats (1295757.0) are recognised as a
+    single id.
+    """
+    from revshare.report_template import EXPECTED_HEADERS_EN, FIRST_DATA_ROW
+
     path = tmp_path / "partner-months.xlsx"
     workbook = Workbook()
-    july = workbook.active
-    july.title = "Июль 2026"
-    august = workbook.create_sheet("Август 2026")
-    for sheet, rows, total in (
-        (july, [("Salon One", "297134.0", "57.0"), ("Salon Two", "726578.0", "49.0")], 106),
-        (august, [("Salon Three", "1295757.0", "80.0")], 80),
-    ):
-        sheet.append(["Business Name", "ID Altegio", " cost ($)"])
-        for name, location_id, cost in rows:
-            sheet.append([name, location_id, cost])
-        sheet.append([None, None, None])
-        sheet.append(["TOTAL AI BeautyBot", None, str(total)])
+    first = workbook.active
+    first.title = "Отчёт (EN)"  # primary sheet; the "September" period lives in B3.
+    # Companion sheet named like a real period must NOT be read.
+    workbook.create_sheet("Август 2026")
+    # Build a legitimate 10-column September report on the FIRST sheet.
+    first.cell(row=2, column=2, value="Acme Bookings, Inc.")
+    first.cell(row=3, column=2, value="September 2026")
+    first.cell(row=5, column=2, value="USD")
+    for column, header in enumerate(EXPECTED_HEADERS_EN, start=1):
+        first.cell(row=10, column=column, value=header)
+    # Row 11 — float ID. The parser must read it as "1295757".
+    first.cell(row=FIRST_DATA_ROW, column=1, value=1295757.0)
+    first.cell(row=FIRST_DATA_ROW, column=2, value="Salon Three")
+    first.cell(row=FIRST_DATA_ROW, column=3, value="Monthly")
+    first.cell(row=FIRST_DATA_ROW, column=4, value="USD")
+    first.cell(row=FIRST_DATA_ROW, column=5, value=80)
+    first.cell(row=FIRST_DATA_ROW, column=6, value=1)
+    first.cell(row=FIRST_DATA_ROW, column=7, value="USD")
+    first.cell(row=FIRST_DATA_ROW, column=9, value=0.2)
+    first.cell(row=FIRST_DATA_ROW + 1, column=1, value="TOTAL in report currency (USD)")
     workbook.save(path)
 
-    august_report = parse_partner_report(
+    parsed = parse_partner_report(
         path, rate=0.2, default_currency="USD", period="2026-08"
     )
-    assert august_report.location_ids == ["1295757"]
-    assert august_report.turnover == 80
-    assert august_report.reported_share == 16
-
-    july_report = parse_partner_report(
-        path, rate=0.2, default_currency="USD", period="2026-07"
-    )
-    assert july_report.location_ids == ["297134", "726578"]
-    assert july_report.turnover == 106
-
-    ids, source = location_ids_from_file(path, "2026-07")
-    assert ids == ["297134", "726578"]
-    assert source == "column"
+    # Period must come from B3, not the caption argument.
+    assert parsed.period == "2026-09"
+    assert parsed.location_ids == ["1295757"]
+    assert parsed.turnover == 80
+    assert parsed.reported_share == 16
+    assert parsed.error is None
+    # The companion sheet's data (had we put any) is NOT included — only
+    # the first sheet's content is parsed.
+    assert len(parsed.location_ids) == 1
 
 
 def test_normalize_application_links():
@@ -449,19 +497,39 @@ def test_multi_application_submission_flow(tmp_path: Path):
     )
 
     assert preview.status_code == 200
-    assert "Your report" in preview.text
-    assert "https://app.alteg.io" not in preview.text
+    # FR-04: multi-app partners hit the application picker first; the
+    # review page is only reached after they pick one. The 999 default
+    # app link (seeded for the demo partner in store.py) is irrelevant
+    # here — replace_application_links above cleared the table.
+    assert "/select-application/" in str(preview.url)
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     draft = store.report_draft(draft_token, partner["id"])
+    assert draft is not None
+    assert draft["application_id"] is None
     assert [item["application_match"] for item in draft["application_breakdown"]] == [
         "matched",
         "matched",
     ]
+    # Pick "Message.help" (app id 39) via the form POST.
+    pick = client.post(
+        f"/submit/demo-partner/select-application/{draft_token}",
+        data={"application_id": "39"},
+        follow_redirects=False,
+    )
+    assert pick.status_code == 303
+    # The picker redirects to the review screen, where we now see the
+    # report with confirm button.
+    review = client.get(f"/submit/demo-partner/review/{draft_token}")
+    assert review.status_code == 200
+    assert "Your report" in review.text
+    assert "https://app.alteg.io" not in review.text
+    refreshed = store.report_draft(draft_token, partner["id"])
+    assert refreshed["application_id"] == 39
 
     response = client.post(f"/submit/demo-partner/confirm/{draft_token}", data={})
 
     assert response.status_code == 200
-    report_id = store.report_id_for(partner["id"], "2026-08")
+    report_id = store.report_id_for(partner["id"], "2026-08", application_id=39)
     report = store.report(report_id)
     assert [item["application_name"] for item in report["application_breakdown"]] == [
         "Message.help",
@@ -767,10 +835,10 @@ def test_admin_can_save_manual_report_without_partner_file(tmp_path: Path):
     report_id = next(item["report_id"] for item in store.dashboard("2026-08") if item["report_id"])
     report = client.get(f"/reports/{report_id}")
     assert report.status_code == 200
-    assert "Entered manually" in report.text
+    assert "Manual entry" in report.text
     assert "Billing cabinet" in report.text
     item = next(item for item in store.dashboard("2026-08") if item["report_id"] == report_id)
-    assert item["display_status"] == "manual"
+    assert item["display_status"] == "admin_submitted"
 
 
 def test_dashboard_filters_and_revshare_column(tmp_path: Path):
@@ -813,7 +881,7 @@ def test_dashboard_filters_and_revshare_column(tmp_path: Path):
     assert "Shown: 2 of 2" in page.text
     assert "Quiet App" in page.text
 
-    submitted = client.get("/?period=2026-08&status=submitted")
+    submitted = client.get("/?period=2026-08&status=partner_submitted")
     assert "Quiet App" not in submitted.text
     assert "Shown: 1 of 2" in submitted.text
     assert "Total" in submitted.text
@@ -833,7 +901,7 @@ def test_dashboard_filters_and_revshare_column(tmp_path: Path):
     assert "Quiet App" in searched.text
     assert "Shown: 1 of 2" in searched.text
 
-    empty = client.get("/?period=2026-08&status=submitted&risk=red")
+    empty = client.get("/?period=2026-08&status=partner_submitted&risk=red")
     assert "No partners match these filters" in empty.text
 
     export = client.get("/export/2026-08.csv?status=missing")
@@ -849,7 +917,7 @@ def test_partner_profile_lists_previous_reports(tmp_path: Path):
 
     empty = client.get(f"/admin/partners/{partner['id']}/edit")
     assert "Partner profile" in empty.text
-    assert "Reported months" in empty.text
+    assert "Partner reports" in empty.text
     assert "No reports yet" in empty.text
 
     for period, turnover in (("2026-07", 500), ("2026-08", 900)):
@@ -1381,7 +1449,7 @@ def test_dashboard_sorts_by_any_column(tmp_path: Path):
         attachment=None,
     )
 
-    by_name = client.get("/?period=2026-08").text
+    by_name = client.get("/?period=2026-08&sort=name&dir=asc").text
     assert by_name.index("Alpha App") < by_name.index("Demo Integration Hub App")
 
     desc = client.get("/?period=2026-08&sort=turnover&dir=desc").text

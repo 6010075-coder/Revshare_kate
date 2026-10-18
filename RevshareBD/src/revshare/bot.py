@@ -617,10 +617,10 @@ def handle_partner_document(
         send_message(token, chat_id, "Не удалось скачать файл. Попробуй ещё раз.")
         return
 
-    period = valid_period(message.get("caption")) or current_period()
+    caption_period = valid_period(message.get("caption")) or current_period()
     import secrets
     attachment_name = (
-        f"{partner['id']}_{period}_{secrets.token_hex(3)}_{file_name}"
+        f"{partner['id']}_{caption_period}_{secrets.token_hex(3)}_{file_name}"
     )
     upload_path = ROOT / "data" / "uploads" / attachment_name
     upload_path.parent.mkdir(parents=True, exist_ok=True)
@@ -631,7 +631,7 @@ def handle_partner_document(
             upload_path,
             rate=partner["rate"],
             default_currency=partner["currency"],
-            period=period,
+            period=caption_period,
         )
     except Exception as exc:  # pragma: no cover - parser edge cases
         store.log_bot_interaction(
@@ -652,6 +652,83 @@ def handle_partner_document(
         )
         return
 
+    # FR-01..08 parser contract: surface hard errors before touching drafts.
+    if parsed.error == "rows_with_missing_amount":
+        rows_text = ", ".join(str(r) for r in parsed.error_rows)
+        message = (
+            f"В строках {rows_text} не указана сумма оплаты. "
+            "Если оплаты не было, поставьте 0 и пришлите файл повторно."
+        )
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={
+                "status": "rows_with_missing_amount",
+                "error_rows": list(parsed.error_rows),
+            },
+        )
+        send_message(token, chat_id, message, reply_markup=keyboard)
+        return
+    if parsed.error == "table_structure_not_found":
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={"status": "table_structure_not_found"},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Не удалось разобрать таблицу. Проверь шаблон и пришли заново.",
+            reply_markup=keyboard,
+        )
+        return
+    if parsed.error in {"workbook_unreadable", "workbook_has_no_sheets", "empty_first_sheet"}:
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={"status": parsed.error},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Не удалось прочитать файл. Проверь, что это .xlsx с заполненными листами.",
+            reply_markup=keyboard,
+        )
+        return
+
+    # FR-02: B3 must carry a recognisable period. Without it the draft
+    # would carry a NULL period and the partner could not confirm it.
+    period = parsed.period
+    if not period:
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={"status": "period_not_found"},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Не удалось определить период на первом листе. Проверьте ячейку B3 и пришлите файл заново.",
+            reply_markup=keyboard,
+        )
+        return
+
     notes = parsed.notes or []
     reasons: list[str] = []
     if "turnover_not_found" in notes:
@@ -664,8 +741,10 @@ def handle_partner_document(
         reasons.append("locations_missing")
     elif len(parsed.location_ids) < 2:
         reasons.append("locations_too_few")
-    if parsed.turnover is not None and parsed.turnover == 0:
-        reasons.append("turnover_zero")
+    # FR-22/23: zero-amount reports are valid (partner may have no payments
+    # this month). The parser returns turnover=0.0 for both empty reports and
+    # reports where every client row has amount=0; both must produce a
+    # confirmable draft, not a rejection.
     if reasons:
         descriptions = {
             "turnover_not_found": "колонки Turnover/Amount",
@@ -673,7 +752,6 @@ def handle_partner_document(
             "application_not_identified": "ссылки на приложение (Application)",
             "locations_missing": "Location ID (хотя бы одного клиента)",
             "locations_too_few": "достаточного количества строк (нашёл только 1 клиента — отчёт обычно содержит больше)",
-            "turnover_zero": "ненулевого оборота",
         }
         followup = "Проверь файл и пришли заново. Если нужна помощь — напиши Kate."
         if len(reasons) == 1:
@@ -693,15 +771,61 @@ def handle_partner_document(
         send_message(token, chat_id, message, reply_markup=keyboard)
         return
 
-    application_id = None
-    if parsed.application_breakdown:
-        first = parsed.application_breakdown[0]
-        application_id = first.get("application_id")
+    # FR-04: one application per partner or one selected. When several
+    # partner_applications are configured the partner must pick one via
+    # the inline ``select_app:{draft_id}:{app_id}`` keyboard.
+    from revshare.altegio_sync import parse_application_id
+    from revshare.application_breakdown import KNOWN_APPLICATION_NAMES
+
+    configured_apps: list[dict[str, object]] = []
+    for link in store.application_links(partner["id"]):
+        app_id = parse_application_id(link.get("url", ""))
+        if app_id is None:
+            continue
+        configured_apps.append(
+            {
+                "application_id": app_id,
+                "url": link.get("url", ""),
+                "comment": link.get("comment", "") or "",
+                "label": (
+                    str(link.get("comment") or "").strip()
+                    or KNOWN_APPLICATION_NAMES.get(int(app_id), "")
+                    or str(link.get("url") or "")
+                ),
+            }
+        )
+
+    if not configured_apps:
+        # FR-04: no configured application blocks the draft entirely.
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={"status": "no_application"},
+            period=period,
+        )
+        send_message(
+            token,
+            chat_id,
+            "У вас нет привязанного приложения. Свяжитесь с Kate (администратором).",
+        )
+        return
+
+    if len(configured_apps) == 1:
+        bound_application_id = int(configured_apps[0]["application_id"])
+    else:
+        # Selection deferred — save draft with NULL application_id and
+        # render a per-application inline keyboard. confirm/resend are not
+        # shown until the partner picks one.
+        bound_application_id = None
 
     draft_id = store.save_bot_draft(
         partner_id=partner["id"],
         period=period,
-        application_id=application_id,
+        application_id=bound_application_id,
         attachment=attachment_name,
         turnover=parsed.turnover,
         currency=parsed.currency or partner["currency"],
@@ -710,6 +834,78 @@ def handle_partner_document(
         extraction_notes=notes,
         application_breakdown=parsed.application_breakdown,
     )
+
+    from revshare.report_template import _format_period
+    from revshare.telegram import send_message_reply
+
+    period_human = _format_period(period, "ru")
+    clients_count = len(parsed.location_ids or parsed.all_location_ids or [])
+
+    if bound_application_id is None:
+        # Multi-app path: render the choice keyboard. The partner picks an
+        # app via ``select_app`` and only then sees confirm/resend.
+        app_name = ""
+        keyboard_rows: list[list[dict[str, str]]] = []
+        for app in configured_apps:
+            label = str(app["label"])
+            keyboard_rows.append(
+                [
+                    {
+                        "text": label,
+                        "callback_data": f"select_app:{draft_id}:{app['application_id']}",
+                    }
+                ]
+            )
+        summary = (
+            f"📊 Принято ({partner['name']}, {period_human})\n"
+            f"Приложение: нужно выбрать\n"
+            f"Клиентов: {clients_count}\n"
+            f"Оборот: {parsed.turnover} {parsed.currency or partner['currency']}\n"
+            f"К выплате Altegio: {parsed.reported_share} {parsed.currency or partner['currency']}"
+        )
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="document",
+            direction="inbound",
+            payload=payload,
+            response={
+                "status": "application_selection_required",
+                "draft_id": draft_id,
+                "period": period,
+                "application_options": [a["application_id"] for a in configured_apps],
+            },
+            period=period,
+            draft_id=draft_id,
+        )
+        send_message_reply(
+            token,
+            chat_id,
+            summary,
+            reply_markup={"inline_keyboard": keyboard_rows},
+        )
+        return
+
+    app_name = str(
+        next(
+            (
+                a["label"]
+                for a in configured_apps
+                if a["application_id"] == bound_application_id
+            ),
+            str(bound_application_id),
+        )
+    )
+
+    summary = (
+        f"📊 Принято ({partner['name']}, {period_human})\n"
+        f"Приложение: {app_name}\n"
+        f"Клиентов: {clients_count}\n"
+        f"Оборот: {parsed.turnover} {parsed.currency or partner['currency']}\n"
+        f"К выплате Altegio: {parsed.reported_share} {parsed.currency or partner['currency']}"
+    )
+
     store.log_bot_interaction(
         partner_id=partner["id"],
         chat_id=str(chat_id),
@@ -723,20 +919,14 @@ def handle_partner_document(
             "period": period,
             "turnover": parsed.turnover,
             "currency": parsed.currency,
-            "client_count": len(parsed.location_ids or []),
+            "client_count": clients_count,
+            "application_id": bound_application_id,
         },
         period=period,
+        draft_id=draft_id,
     )
 
-    from revshare.telegram import send_message_reply
-
-    summary = (
-        f"📊 Принято ({partner['name']}, {period})\n"
-        f"Оборот: {parsed.turnover} {parsed.currency}\n"
-        f"Revshare: {parsed.reported_share}\n"
-        f"Клиентов: {len(parsed.location_ids or [])}"
-    )
-    keyboard = {
+    confirm_keyboard = {
         "inline_keyboard": [
             [
                 {
@@ -756,7 +946,54 @@ def handle_partner_document(
             ],
         ]
     }
-    send_message_reply(token, chat_id, summary, reply_markup=keyboard)
+    send_message_reply(token, chat_id, summary, reply_markup=confirm_keyboard)
+
+
+def _application_label_for(
+    store: Store, partner_id: int, application_id: int
+) -> str:
+    """Best-effort label for an application_id — comment, KNOWN name, or url.
+
+    Used by ``handle_callback`` (select_app / confirm summary) and web
+    flows so a partner can recognise the chosen application.
+    """
+    from revshare.altegio_sync import parse_application_id
+    from revshare.application_breakdown import KNOWN_APPLICATION_NAMES
+
+    for link in store.application_links(partner_id):
+        parsed_id = parse_application_id(link.get("url", ""))
+        if parsed_id == application_id:
+            comment = str(link.get("comment") or "").strip()
+            if comment:
+                return comment
+            if application_id in KNOWN_APPLICATION_NAMES:
+                return KNOWN_APPLICATION_NAMES[application_id]
+            return str(link.get("url") or "")
+    return str(application_id)
+
+
+def _draft_summary_lines(
+    partner: dict,
+    draft: dict,
+    *,
+    period: str,
+    application_label: str,
+    currency: str,
+) -> str:
+    """Compose the partner-facing draft summary text."""
+    from revshare.report_template import _format_period
+
+    period_human = _format_period(period, "ru") or "не определён"
+    turnover = draft.get("turnover")
+    reported_share = draft.get("reported_share")
+    clients_count = len(draft.get("location_ids") or [])
+    return (
+        f"📊 Принято ({partner['name']}, {period_human})\n"
+        f"Приложение: {application_label}\n"
+        f"Клиентов: {clients_count}\n"
+        f"Оборот: {turnover} {currency}\n"
+        f"К выплате Altegio: {reported_share} {currency}"
+    )
 
 
 # ----- Callback query handler (inline buttons) -----
@@ -765,12 +1002,17 @@ def handle_partner_document(
 def handle_callback(
     store: Store, token: str, callback: dict, update_id: int | None
 ) -> None:
-    from revshare.telegram import answer_callback_query
+    from revshare.telegram import (
+        answer_callback_query,
+        edit_message_text,
+        send_message_reply,
+    )
 
     callback_id = callback.get("id")
     data = callback.get("data") or ""
     sender = callback.get("from") or {}
     chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
+    message_id = (callback.get("message") or {}).get("message_id")
     if not callback_id or not chat_id:
         return
 
@@ -782,11 +1024,131 @@ def handle_callback(
     if ":" not in data:
         answer_callback_query(token, callback_id)
         return
-    action, _, raw_id = data.partition(":")
-    try:
-        draft_id = int(raw_id)
-    except ValueError:
-        answer_callback_query(token, callback_id)
+    action, _, rest = data.partition(":")
+    # ``select_app:<draft_id>:<app_id>`` carries two ints after the action
+    # prefix; other actions carry only the draft id.
+    if action == "select_app":
+        raw_draft_id, _, raw_app_id = rest.partition(":")
+        try:
+            draft_id = int(raw_draft_id)
+            app_id = int(raw_app_id)
+        except ValueError:
+            answer_callback_query(token, callback_id)
+            return
+    else:
+        try:
+            draft_id = int(rest)
+        except ValueError:
+            answer_callback_query(token, callback_id)
+            return
+
+    if action == "select_app":
+        # FR-04: bind the chosen application to the draft, then surface the
+        # full summary (with confirm/resend buttons) to the partner.
+        from revshare.altegio_sync import parse_application_id
+
+        draft = store.report_draft_by_id(draft_id)
+        if not draft or int(draft.get("partner_id") or 0) != int(partner["id"]):
+            store.log_bot_interaction(
+                partner_id=partner["id"],
+                chat_id=str(chat_id),
+                update_id=update_id,
+                kind="select_app",
+                direction="inbound",
+                payload={"draft_id": draft_id, "app_id": app_id},
+                response={"status": "draft_not_found"},
+                draft_id=draft_id,
+            )
+            answer_callback_query(
+                token,
+                callback_id,
+                "Черновик не найден. Пришли файл заново.",
+                show_alert=True,
+            )
+            return
+        owned_ids = {
+            parse_application_id(link.get("url", ""))
+            for link in store.application_links(partner["id"])
+        }
+        if app_id not in owned_ids:
+            store.log_bot_interaction(
+                partner_id=partner["id"],
+                chat_id=str(chat_id),
+                update_id=update_id,
+                kind="select_app",
+                direction="inbound",
+                payload={"draft_id": draft_id, "app_id": app_id},
+                response={"status": "application_not_owned"},
+                draft_id=draft_id,
+            )
+            answer_callback_query(
+                token,
+                callback_id,
+                "Это приложение к вам не привязано.",
+                show_alert=True,
+            )
+            return
+        store.set_draft_application(draft_id, partner["id"], app_id)
+        refreshed = store.report_draft_by_id(draft_id) or draft
+        app_label = _application_label_for(store, partner["id"], app_id)
+        currency = refreshed.get("currency") or partner["currency"]
+        summary = _draft_summary_lines(
+            partner,
+            refreshed,
+            period=refreshed["period"],
+            application_label=app_label,
+            currency=currency,
+        )
+        confirm_keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "✅ Подтвердить",
+                        "callback_data": f"confirm:{draft_id}",
+                    },
+                    {
+                        "text": "🔁 Переприслать",
+                        "callback_data": f"resend:{draft_id}",
+                    },
+                ],
+                [
+                    {
+                        "text": "📄 Запросить шаблон",
+                        "callback_data": f"template:{draft_id}",
+                    },
+                ],
+            ]
+        }
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind="select_app",
+            direction="inbound",
+            payload={"draft_id": draft_id, "app_id": app_id},
+            response={"status": "bound", "application_label": app_label},
+            draft_id=draft_id,
+            period=refreshed.get("period"),
+        )
+        answer_callback_query(token, callback_id, "Приложение выбрано")
+        if message_id is not None:
+            try:
+                edit_message_text(
+                    token,
+                    chat_id,
+                    message_id,
+                    summary,
+                    reply_markup=confirm_keyboard,
+                )
+                return
+            except Exception:
+                log.exception("edit_message_text failed, falling back to reply")
+        send_message_reply(
+            token,
+            chat_id,
+            summary,
+            reply_markup=confirm_keyboard,
+        )
         return
 
     if action == "resend":
@@ -832,7 +1194,7 @@ def handle_callback(
         # this remains robust after drafts are deleted or the callback_data is
         # empty. Crucially, we do NOT touch `recent_resend_count` — template
         # requests are not resends and must not consume the daily budget.
-        raw_draft_id = raw_id
+        raw_draft_id = rest
         period = current_period()
         send_template_to_partner(
             store, partner, chat_id, token, update_id=update_id
@@ -865,6 +1227,28 @@ def handle_callback(
                 show_alert=True,
             )
             return
+        # FR-09: confirm must be idempotent. If the draft was already
+        # deleted (double-click, race) we tell the partner to resend the
+        # file instead of writing a second report version.
+        if draft.get("application_id") is None:
+            store.log_bot_interaction(
+                partner_id=partner["id"],
+                chat_id=str(chat_id),
+                update_id=update_id,
+                kind="confirm",
+                direction="inbound",
+                payload={"draft_id": draft_id},
+                response={"status": "application_required"},
+                draft_id=draft_id,
+                period=draft.get("period"),
+            )
+            answer_callback_query(
+                token,
+                callback_id,
+                "Сначала выберите приложение.",
+                show_alert=True,
+            )
+            return
         try:
             report_id, _review = store.submit_report(
                 partner_id=partner["id"],
@@ -880,7 +1264,6 @@ def handle_callback(
                 report_source="partner_file_bot",
                 application_id=draft.get("application_id"),
             )
-            store.delete_report_draft(draft["token"], partner["id"])
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("Failed to submit report from bot draft %s", draft_id)
             store.log_bot_interaction(
@@ -901,6 +1284,16 @@ def handle_callback(
                 show_alert=True,
             )
             return
+        # FR-09: delete the draft only after the report+version landed.
+        # If the DELETE itself fails the next confirm will still find the
+        # draft and report the duplicate, so the partner is protected from
+        # double submissions while keeping the report intact.
+        try:
+            store.delete_report_draft(draft["token"], partner["id"])
+        except Exception:
+            log.exception(
+                "Failed to delete draft %s after successful submit", draft_id
+            )
         store.log_bot_interaction(
             partner_id=partner["id"],
             chat_id=str(chat_id),
@@ -916,12 +1309,12 @@ def handle_callback(
         answer_callback_query(
             token,
             callback_id,
-            "Отчёт получен, ожидает проверки.",
+            "Отчёт подтверждён. Ожидает проверки администратором.",
         )
         send_message(
             token,
             chat_id,
-            "Отчёт получен, ожидает проверки.",
+            "Отчёт подтверждён. Ожидает проверки администратором.",
         )
         return
 

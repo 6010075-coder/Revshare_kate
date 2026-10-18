@@ -136,3 +136,30 @@ def test_delete_unknown_partner_is_404(tmp_path):
         follow_redirects=False,
     )
     assert response.status_code == 404
+
+def test_partner_report_navigation_and_history_separate_drafts(tmp_path):
+    from revshare.web import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(tmp_path / 'report-ux.db')
+    client = TestClient(app)
+    store = app.state.store
+    partner = store.partner_by_token('demo-partner')
+    partner_id = partner['id']
+    report_id, _ = store.submit_report(partner_id=partner_id, period='2026-08', turnover=100, currency='USD', reported_share=20, location_ids=['1'], comment='', attachment=None)
+    store.submit_report(partner_id=partner_id, period='2026-08', turnover=200, currency='USD', reported_share=40, location_ids=['1'], comment='', attachment=None)
+    store.save_bot_draft(partner_id=partner_id, period='2026-09', application_id=None, attachment='draft.xlsx', turnover=50, currency='USD', reported_share=10, location_ids=['1'], extraction_notes=[], application_breakdown=[])
+
+    profile = client.get(f'/admin/partners/{partner_id}/edit?tab=history&view=reports')
+    assert profile.status_code == 200
+    assert 'Drafts <span class="history-count">1</span>' in profile.text
+    draft_page = client.get(f'/admin/partners/{partner_id}/edit?tab=history&view=drafts')
+    assert 'draft.xlsx' in draft_page.text
+    report_page = client.get(f'/reports/{report_id}')
+    assert report_page.status_code == 200
+    assert 'Submitted versions' in report_page.text
+    assert 'Activity' in report_page.text
+    assert 'Version 2' in report_page.text and 'Version 1' in report_page.text
+    assert '200.00 USD' in report_page.text and '100.00 USD' in report_page.text
+    assert f'/admin/partners/{partner_id}/edit?tab=history&amp;view=reports' in report_page.text
+    assert 'draft.xlsx' not in report_page.text

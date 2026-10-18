@@ -297,23 +297,23 @@
   </form>
 
   <section class="card wide-form tab-panel {{ 'active' if active_tab == 'history' else '' }}" data-panel="history" id="history">
-    <h2>{{ t("report_history") }}</h2>
-    <div class="history-toggle" role="tablist" aria-label="{{ t('report_history_view_reports') }}">
+    <h2>{{ t("report_center_title") }}</h2>
+    <p class="hint">{{ t("report_center_intro") }}</p>
+    <div class="history-toggle" aria-label="{{ t('report_center_title') }}">
       <a class="history-toggle-link {{ 'active' if history_view == 'reports' else '' }}"
-         role="tab"
-         aria-selected="{{ 'true' if history_view == 'reports' else 'false' }}"
+         {% if history_view == 'reports' %}aria-current="page"{% endif %}
          href="/admin/partners/{{ partner.id }}/edit?tab=history&amp;view=reports">{{ t("report_history_view_reports") }}</a>
       <a class="history-toggle-link {{ 'active' if history_view == 'drafts' else '' }}"
-         role="tab"
-         aria-selected="{{ 'true' if history_view == 'drafts' else 'false' }}"
-         href="/admin/partners/{{ partner.id }}/edit?tab=history&amp;view=drafts">{{ t("report_history_view_drafts") }}</a>
+         {% if history_view == 'drafts' %}aria-current="page"{% endif %}
+         href="/admin/partners/{{ partner.id }}/edit?tab=history&amp;view=drafts">{{ t("report_history_view_drafts") }} <span class="history-count">{{ drafts|length }}</span></a>
     </div>
     {% if draft_deleted %}
     <p class="flash flash-success">{{ t("report_history_draft_deleted") }}</p>
     {% endif %}
     {% if history_view == 'drafts' %}
-    {% if drafts %}
+    <h3>{{ t("report_history_view_drafts") }}</h3>
     <p class="hint">{{ t("report_history_drafts_hint") }}</p>
+    {% if drafts %}
     <div class="table-card">
       <table>
         <thead>
@@ -361,6 +361,7 @@
     </div>
     {% endif %}
     {% elif history %}
+    <h3>{{ t("report_history_view_reports") }}</h3>
     <p class="hint">{{ t("report_history_hint") }}</p>
     {% if history_chart|length > 1 %}
     <div class="chart-legend">
