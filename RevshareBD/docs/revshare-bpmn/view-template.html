@@ -1,0 +1,86 @@
+<div id="revshare-bpmn-view">
+  <h2>Revshare: процесс и готовность функций</h2>
+  <div class="viz-row text-small" id="rb-legend"></div>
+  <div class="viz-controls">
+    <label class="form-label">Раздел<select class="form-select" id="rb-diagram"></select></label>
+    <label class="form-label">Узел<select class="form-select" id="rb-node"><option value="">Выберите узел на схеме</option></select></label>
+  </div>
+  <div class="text-small" id="rb-summary"></div>
+  <div id="rb-detail" class="card" aria-live="polite" hidden></div>
+  <div id="rb-canvas"></div>
+  <div class="text-small text-muted">Круг: событие · Прямоугольник: задача · Ромб: развилка · «+» в блоке: подробный процесс</div>
+</div>
+<style>
+  #revshare-bpmn-view { --rb-ready:var(--green); --rb-partial:var(--yellow); --rb-missing:var(--red); --rb-unknown:var(--muted-foreground); }
+  #revshare-bpmn-view #rb-legend { margin-block:12px; }
+  #revshare-bpmn-view .rb-swatch { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:5px; background:var(--rb-color); }
+  #revshare-bpmn-view #rb-summary { margin-block:12px; }
+  #revshare-bpmn-view #rb-detail { margin-block:12px; }
+  #revshare-bpmn-view #rb-detail p { margin-block:6px; }
+  #revshare-bpmn-view .rb-svg { display:block; width:100%; }
+  #revshare-bpmn-view .rb-svg text { fill:var(--foreground); font-size:12px; font-family:inherit; }
+  #revshare-bpmn-view .rb-svg .rb-edge { fill:none; stroke:var(--muted-foreground); stroke-width:1.2; }
+  #revshare-bpmn-view .rb-svg .rb-node-shape { fill:color-mix(in srgb,var(--rb-color) 16%,var(--background)); stroke:var(--border); stroke-width:1.2; }
+  #revshare-bpmn-view .rb-svg .rb-event { fill:var(--background); stroke:var(--muted-foreground); }
+  #revshare-bpmn-view .rb-svg .rb-selected { stroke:var(--ring); stroke-width:2; }
+  #revshare-bpmn-view .rb-svg .rb-edge-label { paint-order:stroke; stroke:var(--background); stroke-width:5px; stroke-linejoin:round; }
+</style>
+<script>
+(function(){
+  const root=document.getElementById('revshare-bpmn-view');
+  const data=__DATA__;
+  const labels={ready:'Готово в коде',partial:'Частично',missing:'Не реализовано',unknown:'Не подтверждено'};
+  const symbol={ready:'✓',partial:'◐',missing:'×',unknown:'?'};
+  const diagramSelect=root.querySelector('#rb-diagram'),nodeSelect=root.querySelector('#rb-node'),canvas=root.querySelector('#rb-canvas'),detail=root.querySelector('#rb-detail');
+  let current='overview',selected='';
+  const ns='http://www.w3.org/2000/svg';
+  function el(name,attrs,parent,text){const e=document.createElementNS(ns,name);Object.entries(attrs||{}).forEach(([k,v])=>e.setAttribute(k,v));if(text!==undefined)e.textContent=text;if(parent)parent.append(e);return e;}
+  function plain(name,parent,text,cls){const e=document.createElement(name);e.textContent=text;if(cls)e.className=cls;parent.append(e);return e;}
+  Object.keys(labels).forEach(key=>{const n=Object.values(data.features).filter(f=>f.status===key).length;const s=plain('span',root.querySelector('#rb-legend'),'');s.style.setProperty('--rb-color','var(--rb-'+key+')');plain('span',s,'','rb-swatch');s.append(document.createTextNode(labels[key]+' · '+n));});
+  data.diagrams.forEach(d=>{const o=plain('option',diagramSelect,d.title);o.value=d.id;});
+  function state(){return data.diagrams.find(d=>d.id===current);}
+  function remember(){if(window.openai&&window.openai.setWidgetState)window.openai.setWidgetState({modelContent:{diagram:current,feature:selected},privateContent:null}).catch(()=>{});}
+  function wrap(text,max){const words=text.split(' '),lines=[];let line='';words.forEach(word=>{if(line&&(line+' '+word).length>max){lines.push(line);line=word;}else line+=(line?' ':'')+word;});if(line)lines.push(line);return lines;}
+  function setDetail(id,save=true){
+    selected=id;nodeSelect.value=id;detail.replaceChildren();const n=state().nodes.find(n=>n.id===id);if(!n){detail.hidden=true;draw();return;}
+    const f=data.features[id];detail.hidden=false;
+    plain('strong',detail,(f?id+' · ':'')+n.title);
+    if(f){plain('p',detail,labels[f.status]+' · '+f.priority,'text-small');plain('p',detail,f.description,'text-small');plain('p',detail,'Критерий: '+f.criterion,'text-small');}
+    else if(n.target){plain('p',detail,'Частично. Нажмите «Открыть процесс», чтобы увидеть готовность отдельных функций.','text-small');const b=plain('button',detail,'Открыть процесс','btn');b.type='button';b.addEventListener('click',()=>changeDiagram(n.target));}
+    else plain('p',detail,n.note||'Элемент потока. Цвет готовности присваивается функциям F01–F32.','text-small');
+    draw();if(save)remember();
+  }
+  function changeDiagram(id,save=true){current=id;selected='';diagramSelect.value=id;root.querySelector('#rb-summary').textContent=state().summary;nodeSelect.replaceChildren();const placeholder=plain('option',nodeSelect,'Выберите узел на схеме');placeholder.value='';state().nodes.filter(n=>data.features[n.id]||n.target||n.note).forEach(n=>{const o=plain('option',nodeSelect,(data.features[n.id]?n.id+' · ':'')+n.title);o.value=n.id;});detail.hidden=true;draw();if(save)remember();}
+  function draw(){
+    const d=state(),width=Math.max(280,Math.floor(canvas.getBoundingClientRect().width)),cols=width>=660?3:width>=470?2:1;
+    const margin=cols===1?28:38,usable=width-2*margin,positions={},byid=Object.fromEntries(d.nodes.map(n=>[n.id,n]));let rowIndex=0;
+    d.rows.forEach(row=>{for(let offset=0;offset<row.length;offset+=cols){const chunk=row.slice(offset,offset+cols);chunk.forEach((id,i)=>{const n=byid[id],cell=usable/chunk.length,task=n.kind==='task'||n.kind==='user'||n.kind==='subprocess';const w=task?Math.min(200,cell-16):n.kind==='start'||n.kind==='end'?38:46,h=task?100:w;positions[id]={x:margin+i*cell+(cell-w)/2,y:28+rowIndex*154,w,h,task};});rowIndex++;}});
+    const height=rowIndex*154+26;canvas.replaceChildren();const svg=el('svg',{class:'rb-svg',viewBox:`0 0 ${width} ${height}`,width,height,role:'img','aria-label':d.title+'. Цвета показывают готовность функций; подробности доступны через выбор узла.'},canvas);
+    const defs=el('defs',{},svg),marker=el('marker',{id:'rb-arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'},defs);el('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'var(--muted-foreground)'},marker);
+    d.edges.forEach(e=>{const a=positions[e.a],b=positions[e.b];let points;
+      if(a.y===b.y)points=[[a.x+a.w,a.y+a.h/2],[b.x,b.y+b.h/2]];
+      else if(b.y<a.y){const side=width-10;points=[[a.x+a.w,a.y+a.h/2],[side,a.y+a.h/2],[side,b.y+b.h/2],[b.x+b.w,b.y+b.h/2]];}
+      else{const mid=(a.y+a.h+b.y)/2;points=[[a.x+a.w/2,a.y+a.h],[a.x+a.w/2,mid],[b.x+b.w/2,mid],[b.x+b.w/2,b.y]];}
+      el('polyline',{points:points.map(p=>p.join(',')).join(' '),class:'rb-edge','marker-end':'url(#rb-arrow)'},svg);
+      if(e.label){let p=points[points.length-2];const lx=Math.min(width-95,Math.max(6,p[0]+6));el('text',{x:lx,y:p[1]-7,class:'rb-edge-label'},svg,e.label);}
+    });
+    d.nodes.forEach(n=>{const p=positions[n.id],f=data.features[n.id],status=f?f.status:n.status||'neutral',color=status==='neutral'?'var(--muted-foreground)':'var(--rb-'+status+')';const g=el('g',{'data-node':n.id,style:'--rb-color:'+color},svg);const selectable=f||n.target||n.note;if(selectable){g.setAttribute('class','cursor-interaction');g.addEventListener('click',()=>setDetail(n.id));}
+      let shape;
+      if(p.task){shape=el('rect',{x:p.x,y:p.y,width:p.w,height:p.h,rx:10,class:'rb-node-shape'},g);el('rect',{x:p.x+1,y:p.y+12,width:4,height:p.h-24,rx:2,fill:color},g);
+        if(f)el('text',{x:p.x+12,y:p.y+19},g,n.id+' · '+symbol[status]);
+        const lines=wrap(n.title,Math.max(16,Math.floor((p.w-24)/6.5)));lines.forEach((line,i)=>el('text',{x:p.x+p.w/2,y:p.y+39+i*15,'text-anchor':'middle'},g,line));
+        if(f)el('text',{x:p.x+p.w/2,y:p.y+p.h-10,'text-anchor':'middle'},g,status==='ready'?'Готово':status==='partial'?'Частично':status==='missing'?'Нет':'Не подтверждено');
+        if(n.kind==='subprocess'){el('rect',{x:p.x+p.w/2-7,y:p.y+p.h-20,width:14,height:14,fill:'none',stroke:'var(--foreground)'},g);el('text',{x:p.x+p.w/2,y:p.y+p.h-9,'text-anchor':'middle'},g,'+');}
+      }else if(n.kind==='start'||n.kind==='end'){shape=el('circle',{cx:p.x+p.w/2,cy:p.y+p.h/2,r:p.w/2-2,class:'rb-event','stroke-width':n.kind==='end'?3:1.5},g);}
+      else{shape=el('polygon',{points:`${p.x+p.w/2},${p.y} ${p.x+p.w},${p.y+p.h/2} ${p.x+p.w/2},${p.y+p.h} ${p.x},${p.y+p.h/2}`,class:'rb-event','stroke-width':1.3},g);el('text',{x:p.x+p.w/2,y:p.y+p.h/2+4,'text-anchor':'middle'},g,n.kind==='parallel'?'+':n.kind==='inclusive'?'○':'×');}
+      if(!p.task&&n.title){wrap(n.title,30).forEach((line,i)=>el('text',{x:p.x+p.w/2,y:p.y+p.h+18+i*15,'text-anchor':'middle',class:'rb-edge-label'},g,line));}
+      if(n.id===selected)shape.classList.add('rb-selected');
+    });
+  }
+  diagramSelect.addEventListener('change',()=>changeDiagram(diagramSelect.value));nodeSelect.addEventListener('change',()=>setDetail(nodeSelect.value));
+  const saved=window.openai&&window.openai.widgetState&&window.openai.widgetState.modelContent;
+  changeDiagram(saved&&data.diagrams.some(d=>d.id===saved.diagram)?saved.diagram:'overview',false);
+  if(saved&&saved.feature&&state().nodes.some(n=>n.id===saved.feature))setDetail(saved.feature,false);
+  new ResizeObserver(()=>draw()).observe(canvas);
+})();
+</script>

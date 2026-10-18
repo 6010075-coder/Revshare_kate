@@ -1,0 +1,920 @@
+<?xml version='1.0' encoding='utf-8'?>
+<bpmn:definitions xmlns:bioc="http://bpmn.io/schema/bpmn/biocolor/1.0" xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="RevshareDefinitions" targetNamespace="https://alteg.io/revshare/process" exporter="Revshare readiness audit" exporterVersion="2026-10-04">
+  <bpmn:process id="RevshareProcess" name="Ежемесячный сбор и сверка отчётов" isExecutable="false">
+    <bpmn:startEvent id="month" name="Новый отчётный месяц" />
+    <bpmn:subProcess id="intake" name="Сбор отчётов">
+      <bpmn:startEvent id="i_start" name="Начало сбора" />
+      <bpmn:serviceTask id="F06" name="Единый Excel-шаблон">
+        <bpmn:documentation>F06 | Частично | Must
+/submit/{token}/template.xlsx создаёт Excel с колонками приложения, Location ID, периода подписки, валюты, суммы, курса, доли и комментария. Структура рекомендована, но не обязательна для загрузки; отдельной обязательной колонки причины отсутствия оплаты нет.
+Критерий: Зафиксированы обязательные колонки и формат данных</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F07" name="Отправка шаблона">
+        <bpmn:documentation>F07 | Частично | Should
+Шаблон доступен по персональной ссылке на форме. Отдельная автоматическая рассылка файла шаблона до начала отчётного периода не найдена.
+Критерий: Партнёр получает актуальный шаблон перед формированием отчёта</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:inclusiveGateway id="i_notice" name="Каналы уведомлений" />
+      <bpmn:serviceTask id="F02" name="Напоминания в Telegram">
+        <bpmn:documentation>F02 | Частично | Must
+src/revshare/dispatch.py формирует и отправляет уведомления, worker.py запускает планировщик, bot.py привязывает чат. В локальной конфигурации планировщик выключен; реальная отправка не проверялась.
+Критерий: Бот напоминает партнёру о необходимости предоставить отчёт</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F03" name="Напоминания по email">
+        <bpmn:documentation>F03 | Частично | Must
+Есть расписание, шаблон письма и исходящая SMTP-отправка в dispatch.py, email_letter.py, mailer.py. Локально SMTP не готов и планировщик выключен.
+Критерий: Партнёр получает письмо в установленный срок</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:inclusiveGateway id="i_join" name="" />
+      <bpmn:exclusiveGateway id="i_channel" name="Канал отчёта" />
+      <bpmn:serviceTask id="F05" name="Загрузка через веб-форму">
+        <bpmn:documentation>F05 | Готово в коде | Must
+web.py: /submit/{token} и /submit/{token}/parse; персональный токен, выбор месяца, загрузка Excel, CSV или PDF до 10 МБ, просмотр результата. Публичный адрес локально не настроен.
+Критерий: Партнёр может загрузить Excel по персональной/доступной ссылке</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F01" name="Приём Excel в Telegram">
+        <bpmn:documentation>F01 | Нет | Must
+src/revshare/bot.py обрабатывает /start и привязку чата. Обработки document, скачивания файла и запуска парсера из бота нет.
+Критерий: Партнёр может загрузить Excel через бота</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F04" name="Приём вложений email">
+        <bpmn:documentation>F04 | Нет | Must
+В проекте есть исходящая почта, но нет входящего почтового клиента, webhook или обработчика вложений.
+Критерий: Система автоматически получает и сохраняет вложенный отчёт</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="i_merge" name="" />
+      <bpmn:endEvent id="i_end" name="Файл получен" />
+      <bpmn:sequenceFlow id="intake_flow_0" sourceRef="i_start" targetRef="F06" name="" />
+      <bpmn:sequenceFlow id="intake_flow_1" sourceRef="F06" targetRef="F07" name="" />
+      <bpmn:sequenceFlow id="intake_flow_2" sourceRef="F07" targetRef="i_notice" name="" />
+      <bpmn:sequenceFlow id="intake_flow_3" sourceRef="i_notice" targetRef="F02" name="" />
+      <bpmn:sequenceFlow id="intake_flow_4" sourceRef="i_notice" targetRef="F03" name="" />
+      <bpmn:sequenceFlow id="intake_flow_5" sourceRef="F02" targetRef="i_join" name="" />
+      <bpmn:sequenceFlow id="intake_flow_6" sourceRef="F03" targetRef="i_join" name="" />
+      <bpmn:sequenceFlow id="intake_flow_7" sourceRef="i_join" targetRef="i_channel" name="" />
+      <bpmn:sequenceFlow id="intake_flow_8" sourceRef="i_channel" targetRef="F05" name="Веб" />
+      <bpmn:sequenceFlow id="intake_flow_9" sourceRef="i_channel" targetRef="F01" name="Бот" />
+      <bpmn:sequenceFlow id="intake_flow_10" sourceRef="i_channel" targetRef="F04" name="Почта" />
+      <bpmn:sequenceFlow id="intake_flow_11" sourceRef="F05" targetRef="i_merge" name="" />
+      <bpmn:sequenceFlow id="intake_flow_12" sourceRef="F01" targetRef="i_merge" name="" />
+      <bpmn:sequenceFlow id="intake_flow_13" sourceRef="F04" targetRef="i_merge" name="" />
+      <bpmn:sequenceFlow id="intake_flow_14" sourceRef="i_merge" targetRef="i_end" name="" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="validation" name="Разбор и валидация">
+      <bpmn:startEvent id="v_start" name="Файл получен" />
+      <bpmn:serviceTask id="F08" name="Обработка Excel">
+        <bpmn:documentation>F08 | Готово в коде | Must
+web.py сохраняет оригинал в data/uploads, вызывает parse_partner_report из extract.py, создаёт черновик и открывает сверку.
+Критерий: Файл принимается системой и передаётся на проверку</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F09" name="Проверка колонок">
+        <bpmn:documentation>F09 | Частично | Must
+Проверяются расширение, размер и распознаваемость данных. Парсер поддерживает разные формы и резервный поиск по тексту, поэтому общего списка обязательных колонок и отказа при их отсутствии нет.
+Критерий: Проверяется наличие всех обязательных колонок</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F10" name="Проверка заполненности">
+        <bpmn:documentation>F10 | Частично | Must
+Парсер фиксирует заметки вроде turnover_not_found и locations_not_found, отдельные статусы считываются при наличии колонки. Все обязательные поля каждой строки не проверяются; некоторые отсутствующие суммы при подтверждении превращаются в ноль.
+Критерий: Выявляются отсутствующие обязательные значения</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="v_valid" name="Данные корректны?" />
+      <bpmn:serviceTask id="F12" name="Извлечение ID аккаунтов">
+        <bpmn:documentation>F12 | Готово в коде | Must
+extract.py читает Location ID из структурированных колонок или извлекает их из произвольного файла. Для нестандартных файлов точность распознавания зависит от формата.
+Критерий: Из отчёта формируется перечень клиентских ID</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F11" name="Ошибки по строкам и полям">
+        <bpmn:documentation>F11 | Нет | Must
+Есть общая ошибка чтения файла и сводные замечания, но нет полного списка ошибок с номером строки, названием поля и причиной для исправления.
+Критерий: Ошибки фиксируются с указанием строк/полей</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="v_end" name="Данные для сверки" />
+      <bpmn:serviceTask id="F30" name="Исправление и повторная загрузка">
+        <bpmn:documentation>F30 | Частично | Must
+Можно заменить файл и отправить новую версию; report_versions сохраняет историю. Ошибки чтения общие, без строки и поля, поэтому исправлять файл по результату системы неудобно.
+Критерий: Партнёр может исправить отчёт и повторно отправить его</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="validation_flow_0" sourceRef="v_start" targetRef="F08" name="" />
+      <bpmn:sequenceFlow id="validation_flow_1" sourceRef="F08" targetRef="F09" name="" />
+      <bpmn:sequenceFlow id="validation_flow_2" sourceRef="F09" targetRef="F10" name="" />
+      <bpmn:sequenceFlow id="validation_flow_3" sourceRef="F10" targetRef="v_valid" name="" />
+      <bpmn:sequenceFlow id="validation_flow_4" sourceRef="v_valid" targetRef="F12" name="Да" />
+      <bpmn:sequenceFlow id="validation_flow_5" sourceRef="v_valid" targetRef="F11" name="Нет" />
+      <bpmn:sequenceFlow id="validation_flow_6" sourceRef="F12" targetRef="v_end" name="" />
+      <bpmn:sequenceFlow id="validation_flow_7" sourceRef="F11" targetRef="F30" name="" />
+      <bpmn:sequenceFlow id="validation_flow_8" sourceRef="F30" targetRef="F08" name="Новый файл" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="reconcile" name="Автоматическая сверка">
+      <bpmn:startEvent id="c_start" name="Данные извлечены" />
+      <bpmn:serviceTask id="F13" name="Аккаунты во внутренней базе">
+        <bpmn:documentation>F13 | Частично | Must
+altegio_sync.py получает связи приложения и аккаунта из Altegio BI через MySQL или MCP. Источник с названием «Импсипи бирай» в коде не обозначен; нужно подтвердить, совпадает ли он с текущим BI-источником.
+Критерий: Определяется наличие клиентов во внутренней базе</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:parallelGateway id="c_fork" name="Проверки" />
+      <bpmn:serviceTask id="F14" name="Активность через Elastic">
+        <bpmn:documentation>F14 | Нет | Must
+Текущая активность определяется по событиям marketplace_application_log и платежам в Altegio BI за границы месяца. Запросов к Impsipi Elastic в проекте нет.
+Критерий: Для каждого клиента определяется статус активности</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F15" name="Сверка оборота">
+        <bpmn:documentation>F15 | Нет | Must
+Оборот читается из отчёта партнёра. Есть сравнение с его прошлым отчётом для аномалий, но независимый внутренний оборот за месяц не загружается и не сопоставляется.
+Критерий: Значение партнёра сравнивается с внутренними данными</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F17" name="Сверка числа аккаунтов">
+        <bpmn:documentation>F17 | Частично | Must
+На странице сверки видны числа ID из файла и активных аккаунтов Altegio, а также отсутствующие ID. Проверка по паре приложение + аккаунт зависит от состава файла и снимка BI.
+Критерий: Количество клиентов партнёра сопоставляется с внутренними данными</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F16" name="Сверка ревшера">
+        <bpmn:documentation>F16 | Частично | Must
+store.assess считает ожидаемую долю как оборот партнёра × договорная ставка и сравнивает с заявленной долей с допуском 1%. Независимая база выручки и полный денежный delta-отчёт отсутствуют.
+Критерий: Рассчитывается и фиксируется расхождение</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:parallelGateway id="c_join" name="" />
+      <bpmn:serviceTask id="F18" name="Итоговые расхождения">
+        <bpmn:documentation>F18 | Частично | Must
+Формируются списки отсутствующих активных и неизвестных ID, статусы оплат, причины и оценка риска. Результат не включает независимую сверку оборота или Elastic и может опираться на ранее сохранённый снимок месяца.
+Критерий: Формируется единый результат сверки по партнёру</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="c_end" name="Результат сверки" />
+      <bpmn:sequenceFlow id="reconcile_flow_0" sourceRef="c_start" targetRef="F13" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_1" sourceRef="F13" targetRef="c_fork" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_2" sourceRef="c_fork" targetRef="F14" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_3" sourceRef="c_fork" targetRef="F15" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_4" sourceRef="F14" targetRef="F17" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_5" sourceRef="F15" targetRef="F16" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_6" sourceRef="F17" targetRef="c_join" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_7" sourceRef="F16" targetRef="c_join" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_8" sourceRef="c_join" targetRef="F18" name="" />
+      <bpmn:sequenceFlow id="reconcile_flow_9" sourceRef="F18" targetRef="c_end" name="" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="result" name="Результат и начисления">
+      <bpmn:startEvent id="r_start" name="Сверка завершена" />
+      <bpmn:serviceTask id="F23" name="Показать расхождения">
+        <bpmn:documentation>F23 | Частично | Must
+Есть экран предварительной сверки и детали отчёта с ID и причинами. Полнота ограничена теми проверками, которые реализованы, и доступностью снимка BI.
+Критерий: Видны найденные системой несоответствия</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F24" name="Показать суммы и разницу">
+        <bpmn:documentation>F24 | Частично | Must
+Заявленные оборот и доля, а также расчётная доля по ставке доступны. Независимых внутренних значений оборота и доли, их разницы с отчётом нет.
+Критерий: Видны заявленные, внутренние значения и разница</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F25" name="Показать активные аккаунты">
+        <bpmn:documentation>F25 | Частично | Must
+Число ID из файла и активных аккаунтов BI выводится. Величина «активен» сейчас основана на логах и платежах BI, а не на согласованном источнике Elastic.
+Критерий: Видны заявленные и подтверждённые клиенты</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="r_data" name="Есть снимок BI?" />
+      <bpmn:userTask id="r_send" name="Партнёр отправляет отчёт">
+        <bpmn:documentation>Реализовано в веб-сценарии. Можно отправить с расхождениями; повторная загрузка доступна в разделе 2.</bpmn:documentation>
+      </bpmn:userTask>
+      <bpmn:endEvent id="r_wait" name="Отправка заблокирована">
+        <bpmn:documentation>Текущее ограничение: без снимка Altegio за выбранный месяц подтвердить отчёт нельзя.</bpmn:documentation>
+      </bpmn:endEvent>
+      <bpmn:parallelGateway id="r_fork" name="Представления отчёта" />
+      <bpmn:serviceTask id="F22" name="Сводка по партнёру">
+        <bpmn:documentation>F22 | Готово в коде | Must
+/reports/{id} и карточка партнёра показывают сохранённый отчёт, историю и детали сверки.
+Критерий: Отображаются результаты конкретного отчёта/партнёра</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F21" name="Карточки партнёров">
+        <bpmn:documentation>F21 | Готово в коде | Must
+/admin/partners и карточка партнёра: список, редактирование, архив, история отчётов и персональная ссылка.
+Критерий: Можно выбрать партнёра для детального анализа</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="F20" name="Общая сводка">
+        <bpmn:documentation>F20 | Готово в коде | Must
+Главная страница в web.py и templates/dashboard.html показывает отчёты, статусы и суммы по выбранному месяцу.
+Критерий: Видны все партнёры и основные показатели</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:parallelGateway id="r_join" name="" />
+      <bpmn:userTask id="r_approve" name="Администратор подтверждает начисление">
+        <bpmn:documentation>Передача в очередь Google Таблицы требует явного действия администратора.</bpmn:documentation>
+      </bpmn:userTask>
+      <bpmn:serviceTask id="F19" name="Выгрузка в Google Таблицы">
+        <bpmn:documentation>F19 | Частично | Must
+sheet_sync.py после действия администратора записывает только оборот по партнёру и месяцу. Полный результат сверки не выгружается автоматически после проверки; реальная запись в этой ревизии не запускалась.
+Критерий: Проверенные данные автоматически выгружаются в целевую таблицу</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="r_end" name="Оборот передан" />
+      <bpmn:sequenceFlow id="result_flow_0" sourceRef="r_start" targetRef="F23" name="" />
+      <bpmn:sequenceFlow id="result_flow_1" sourceRef="F23" targetRef="F24" name="" />
+      <bpmn:sequenceFlow id="result_flow_2" sourceRef="F24" targetRef="F25" name="" />
+      <bpmn:sequenceFlow id="result_flow_3" sourceRef="F25" targetRef="r_data" name="" />
+      <bpmn:sequenceFlow id="result_flow_4" sourceRef="r_data" targetRef="r_send" name="Да" />
+      <bpmn:sequenceFlow id="result_flow_5" sourceRef="r_data" targetRef="r_wait" name="Нет" />
+      <bpmn:sequenceFlow id="result_flow_6" sourceRef="r_send" targetRef="r_fork" name="" />
+      <bpmn:sequenceFlow id="result_flow_7" sourceRef="r_fork" targetRef="F22" name="" />
+      <bpmn:sequenceFlow id="result_flow_8" sourceRef="r_fork" targetRef="F21" name="" />
+      <bpmn:sequenceFlow id="result_flow_9" sourceRef="r_fork" targetRef="F20" name="" />
+      <bpmn:sequenceFlow id="result_flow_10" sourceRef="F22" targetRef="r_join" name="" />
+      <bpmn:sequenceFlow id="result_flow_11" sourceRef="F21" targetRef="r_join" name="" />
+      <bpmn:sequenceFlow id="result_flow_12" sourceRef="F20" targetRef="r_join" name="" />
+      <bpmn:sequenceFlow id="result_flow_13" sourceRef="r_join" targetRef="r_approve" name="" />
+      <bpmn:sequenceFlow id="result_flow_14" sourceRef="r_approve" targetRef="F19" name="" />
+      <bpmn:sequenceFlow id="result_flow_15" sourceRef="F19" targetRef="r_end" name="" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="finished" name="Отчёт обработан" />
+    <bpmn:sequenceFlow id="overview_flow_0" sourceRef="month" targetRef="intake" name="" />
+    <bpmn:sequenceFlow id="overview_flow_1" sourceRef="intake" targetRef="validation" name="" />
+    <bpmn:sequenceFlow id="overview_flow_2" sourceRef="validation" targetRef="reconcile" name="" />
+    <bpmn:sequenceFlow id="overview_flow_3" sourceRef="reconcile" targetRef="result" name="" />
+    <bpmn:sequenceFlow id="overview_flow_4" sourceRef="result" targetRef="finished" name="" />
+  </bpmn:process>
+  <bpmn:process id="OperationsProcess" name="Подготовка продукта к запуску" isExecutable="false">
+    <bpmn:startEvent id="o_start" name="Подготовка продукта" />
+    <bpmn:serviceTask id="F28" name="Авторизация и доступ">
+      <bpmn:documentation>F28 | Частично | Must
+Админка поддерживает Basic Auth и защиту форм при включённой авторизации, партнёр открывает персональную ссылку с токеном. Ролевой модели сотрудников и подтверждённой безопасной конфигурации продакшена нет.
+Критерий: Партнёры и сотрудники имеют доступ только к разрешённым данным</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="F26" name="Сервис доступен 24/7">
+      <bpmn:documentation>F26 | Не подтверждено | Must
+Команды запуска и проект плана развёртывания есть, но в DEPLOY.md шаги запуска не отмечены, workflow деплоя отсутствует, текущая ссылка указывает на 127.0.0.1. Доступность 24/7 не доказана.
+Критерий: Бот, backend и веб-интерфейс доступны 24/7</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="F27" name="Логи и мониторинг">
+      <bpmn:documentation>F27 | Частично | Should
+Есть Python-логи фонового процесса, записи об отправках и /health. Централизованного мониторинга, алертов и подтверждённого наблюдения за всеми каналами нет.
+Критерий: Ошибки загрузки, обработки и интеграций фиксируются</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="F29" name="Связать сквозной процесс">
+      <bpmn:documentation>F29 | Частично | Must
+Веб-загрузка, извлечение, автоматическое получение снимка при его отсутствии, экран сверки и сохранение отчёта связаны. Отправка через Telegram/email и запись полного результата в Таблицу в цепочку не входят. Без снимка Altegio подтверждение блокируется.
+Критерий: От загрузки файла до результата процесс проходит автоматически</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="F31" name="Сквозное тестирование">
+      <bpmn:documentation>F31 | Частично | Must
+Есть автоматические тесты компонентов и веб-сценариев. При текущем локальном запуске: 103 прошли, 1 не прошёл (test_credentials_ready_requires_sheet_id), поскольку локальная конфигурация Google Таблицы влияет на ожидание теста. Полный цикл с реальными внешними сервисами не подтверждён.
+Критерий: Проверен полный сценарий на реальных/тестовых отчётах</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="F32" name="Полный запуск">
+      <bpmn:documentation>F32 | Нет | Must
+Из рабочей копии не следует, что полный функционал развёрнут. Ключевые проверки и два канала приёма отчётов отсутствуют; критерий запуска пока не выполнен.
+Критерий: Продукт запускается только после готовности автоматической сверки</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="o_end" name="Промышленная работа" />
+    <bpmn:sequenceFlow id="operations_flow_0" sourceRef="o_start" targetRef="F28" name="" />
+    <bpmn:sequenceFlow id="operations_flow_1" sourceRef="F28" targetRef="F26" name="" />
+    <bpmn:sequenceFlow id="operations_flow_2" sourceRef="F26" targetRef="F27" name="" />
+    <bpmn:sequenceFlow id="operations_flow_3" sourceRef="F27" targetRef="F29" name="" />
+    <bpmn:sequenceFlow id="operations_flow_4" sourceRef="F29" targetRef="F31" name="" />
+    <bpmn:sequenceFlow id="operations_flow_5" sourceRef="F31" targetRef="F32" name="" />
+    <bpmn:sequenceFlow id="operations_flow_6" sourceRef="F32" targetRef="o_end" name="" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="overview_diagram" name="Общий процесс">
+    <bpmndi:BPMNPlane id="overview_plane" bpmnElement="RevshareProcess">
+      <bpmndi:BPMNShape id="month_shape" bpmnElement="month" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="intake_shape" bpmnElement="intake" bioc:fill="#FEF3C7" bioc:stroke="#A16207" isExpanded="false">
+        <dc:Bounds x="290.0" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="validation_shape" bpmnElement="validation" bioc:fill="#FEF3C7" bioc:stroke="#A16207" isExpanded="false">
+        <dc:Bounds x="290.0" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="reconcile_shape" bpmnElement="reconcile" bioc:fill="#FEF3C7" bioc:stroke="#A16207" isExpanded="false">
+        <dc:Bounds x="290.0" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="result_shape" bpmnElement="result" bioc:fill="#FEF3C7" bioc:stroke="#A16207" isExpanded="false">
+        <dc:Bounds x="290.0" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="finished_shape" bpmnElement="finished" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="725" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="776" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="overview_flow_0_edge" bpmnElement="overview_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="overview_flow_1_edge" bpmnElement="overview_flow_1">
+        <di:waypoint x="380.0" y="273" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="380.0" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="overview_flow_2_edge" bpmnElement="overview_flow_2">
+        <di:waypoint x="380.0" y="408" />
+        <di:waypoint x="380.0" y="431.5" />
+        <di:waypoint x="380.0" y="431.5" />
+        <di:waypoint x="380.0" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="overview_flow_3_edge" bpmnElement="overview_flow_3">
+        <di:waypoint x="380.0" y="543" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="overview_flow_4_edge" bpmnElement="overview_flow_4">
+        <di:waypoint x="380.0" y="678" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="intake_diagram" name="1. Сбор отчётов">
+    <bpmndi:BPMNPlane id="intake_plane" bpmnElement="intake">
+      <bpmndi:BPMNShape id="i_start_shape" bpmnElement="i_start" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F06_shape" bpmnElement="F06" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="127.5" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F07_shape" bpmnElement="F07" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="i_notice_shape" bpmnElement="i_notice" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="320" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="383" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F02_shape" bpmnElement="F02" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="127.5" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F03_shape" bpmnElement="F03" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="i_join_shape" bpmnElement="i_join" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="590" width="58" height="58" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="i_channel_shape" bpmnElement="i_channel" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="725" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="788" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F05_shape" bpmnElement="F05" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="73.33333333333333" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F01_shape" bpmnElement="F01" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="289.99999999999994" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F04_shape" bpmnElement="F04" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="506.66666666666663" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="i_merge_shape" bpmnElement="i_merge" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="995" width="58" height="58" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="i_end_shape" bpmnElement="i_end" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="1130" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="1181" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="intake_flow_0_edge" bpmnElement="intake_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="217.5" y="140.5" />
+        <di:waypoint x="217.5" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_1_edge" bpmnElement="intake_flow_1">
+        <di:waypoint x="307.5" y="229.0" />
+        <di:waypoint x="452.5" y="229.0" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_2_edge" bpmnElement="intake_flow_2">
+        <di:waypoint x="542.5" y="273" />
+        <di:waypoint x="542.5" y="296.5" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="380.0" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_3_edge" bpmnElement="intake_flow_3">
+        <di:waypoint x="380.0" y="378" />
+        <di:waypoint x="380.0" y="416.5" />
+        <di:waypoint x="217.5" y="416.5" />
+        <di:waypoint x="217.5" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_4_edge" bpmnElement="intake_flow_4">
+        <di:waypoint x="380.0" y="378" />
+        <di:waypoint x="380.0" y="416.5" />
+        <di:waypoint x="542.5" y="416.5" />
+        <di:waypoint x="542.5" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_5_edge" bpmnElement="intake_flow_5">
+        <di:waypoint x="217.5" y="543" />
+        <di:waypoint x="217.5" y="566.5" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_6_edge" bpmnElement="intake_flow_6">
+        <di:waypoint x="542.5" y="543" />
+        <di:waypoint x="542.5" y="566.5" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_7_edge" bpmnElement="intake_flow_7">
+        <di:waypoint x="380.0" y="648" />
+        <di:waypoint x="380.0" y="686.5" />
+        <di:waypoint x="380.0" y="686.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_8_edge" bpmnElement="intake_flow_8">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="163.33333333333331" y="821.5" />
+        <di:waypoint x="163.33333333333331" y="860" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="169.33333333333331" y="801.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_9_edge" bpmnElement="intake_flow_9">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="379.99999999999994" y="821.5" />
+        <di:waypoint x="379.99999999999994" y="860" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="385.99999999999994" y="801.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_10_edge" bpmnElement="intake_flow_10">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="596.6666666666666" y="821.5" />
+        <di:waypoint x="596.6666666666666" y="860" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="602.6666666666666" y="801.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_11_edge" bpmnElement="intake_flow_11">
+        <di:waypoint x="163.33333333333331" y="948" />
+        <di:waypoint x="163.33333333333331" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_12_edge" bpmnElement="intake_flow_12">
+        <di:waypoint x="379.99999999999994" y="948" />
+        <di:waypoint x="379.99999999999994" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_13_edge" bpmnElement="intake_flow_13">
+        <di:waypoint x="596.6666666666666" y="948" />
+        <di:waypoint x="596.6666666666666" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="intake_flow_14_edge" bpmnElement="intake_flow_14">
+        <di:waypoint x="380.0" y="1053" />
+        <di:waypoint x="380.0" y="1091.5" />
+        <di:waypoint x="380.0" y="1091.5" />
+        <di:waypoint x="380.0" y="1130" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="validation_diagram" name="2. Разбор и валидация">
+    <bpmndi:BPMNPlane id="validation_plane" bpmnElement="validation">
+      <bpmndi:BPMNShape id="v_start_shape" bpmnElement="v_start" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F08_shape" bpmnElement="F08" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="290.0" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F09_shape" bpmnElement="F09" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="127.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F10_shape" bpmnElement="F10" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="v_valid_shape" bpmnElement="v_valid" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="455" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="518" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F12_shape" bpmnElement="F12" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="127.5" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F11_shape" bpmnElement="F11" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="452.5" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="v_end_shape" bpmnElement="v_end" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="194.5" y="725" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="124.5" y="776" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F30_shape" bpmnElement="F30" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="725" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="validation_flow_0_edge" bpmnElement="validation_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_1_edge" bpmnElement="validation_flow_1">
+        <di:waypoint x="380.0" y="273" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="217.5" y="296.5" />
+        <di:waypoint x="217.5" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_2_edge" bpmnElement="validation_flow_2">
+        <di:waypoint x="307.5" y="364.0" />
+        <di:waypoint x="452.5" y="364.0" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_3_edge" bpmnElement="validation_flow_3">
+        <di:waypoint x="542.5" y="408" />
+        <di:waypoint x="542.5" y="431.5" />
+        <di:waypoint x="380.0" y="431.5" />
+        <di:waypoint x="380.0" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_4_edge" bpmnElement="validation_flow_4">
+        <di:waypoint x="380.0" y="513" />
+        <di:waypoint x="380.0" y="551.5" />
+        <di:waypoint x="217.5" y="551.5" />
+        <di:waypoint x="217.5" y="590" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="223.5" y="531.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_5_edge" bpmnElement="validation_flow_5">
+        <di:waypoint x="380.0" y="513" />
+        <di:waypoint x="380.0" y="551.5" />
+        <di:waypoint x="542.5" y="551.5" />
+        <di:waypoint x="542.5" y="590" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="548.5" y="531.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_6_edge" bpmnElement="validation_flow_6">
+        <di:waypoint x="217.5" y="678" />
+        <di:waypoint x="217.5" y="701.5" />
+        <di:waypoint x="217.5" y="701.5" />
+        <di:waypoint x="217.5" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_7_edge" bpmnElement="validation_flow_7">
+        <di:waypoint x="542.5" y="678" />
+        <di:waypoint x="542.5" y="701.5" />
+        <di:waypoint x="542.5" y="701.5" />
+        <di:waypoint x="542.5" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="validation_flow_8_edge" bpmnElement="validation_flow_8">
+        <di:waypoint x="632.5" y="769.0" />
+        <di:waypoint x="740" y="769.0" />
+        <di:waypoint x="740" y="229.0" />
+        <di:waypoint x="470.0" y="229.0" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="746" y="209.0" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="reconcile_diagram" name="3. Автоматическая сверка">
+    <bpmndi:BPMNPlane id="reconcile_plane" bpmnElement="reconcile">
+      <bpmndi:BPMNShape id="c_start_shape" bpmnElement="c_start" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F13_shape" bpmnElement="F13" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="c_fork_shape" bpmnElement="c_fork" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="320" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="383" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F14_shape" bpmnElement="F14" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="127.5" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F15_shape" bpmnElement="F15" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="452.5" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F17_shape" bpmnElement="F17" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="127.5" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F16_shape" bpmnElement="F16" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="c_join_shape" bpmnElement="c_join" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="725" width="58" height="58" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F18_shape" bpmnElement="F18" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="c_end_shape" bpmnElement="c_end" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="995" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="1046" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="reconcile_flow_0_edge" bpmnElement="reconcile_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_1_edge" bpmnElement="reconcile_flow_1">
+        <di:waypoint x="380.0" y="273" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="380.0" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_2_edge" bpmnElement="reconcile_flow_2">
+        <di:waypoint x="380.0" y="378" />
+        <di:waypoint x="380.0" y="416.5" />
+        <di:waypoint x="217.5" y="416.5" />
+        <di:waypoint x="217.5" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_3_edge" bpmnElement="reconcile_flow_3">
+        <di:waypoint x="380.0" y="378" />
+        <di:waypoint x="380.0" y="416.5" />
+        <di:waypoint x="542.5" y="416.5" />
+        <di:waypoint x="542.5" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_4_edge" bpmnElement="reconcile_flow_4">
+        <di:waypoint x="217.5" y="543" />
+        <di:waypoint x="217.5" y="566.5" />
+        <di:waypoint x="217.5" y="566.5" />
+        <di:waypoint x="217.5" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_5_edge" bpmnElement="reconcile_flow_5">
+        <di:waypoint x="542.5" y="543" />
+        <di:waypoint x="542.5" y="566.5" />
+        <di:waypoint x="542.5" y="566.5" />
+        <di:waypoint x="542.5" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_6_edge" bpmnElement="reconcile_flow_6">
+        <di:waypoint x="217.5" y="678" />
+        <di:waypoint x="217.5" y="701.5" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_7_edge" bpmnElement="reconcile_flow_7">
+        <di:waypoint x="542.5" y="678" />
+        <di:waypoint x="542.5" y="701.5" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_8_edge" bpmnElement="reconcile_flow_8">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="380.0" y="860" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="reconcile_flow_9_edge" bpmnElement="reconcile_flow_9">
+        <di:waypoint x="380.0" y="948" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="result_diagram" name="4. Результат и начисления">
+    <bpmndi:BPMNPlane id="result_plane" bpmnElement="result">
+      <bpmndi:BPMNShape id="r_start_shape" bpmnElement="r_start" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F23_shape" bpmnElement="F23" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F24_shape" bpmnElement="F24" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="127.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F25_shape" bpmnElement="F25" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_data_shape" bpmnElement="r_data" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="455" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="518" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_send_shape" bpmnElement="r_send" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="127.5" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_wait_shape" bpmnElement="r_wait" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="519.5" y="590" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="449.5" y="641" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_fork_shape" bpmnElement="r_fork" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="725" width="58" height="58" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="281.0" y="788" width="198" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F22_shape" bpmnElement="F22" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="73.33333333333333" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F21_shape" bpmnElement="F21" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="289.99999999999994" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F20_shape" bpmnElement="F20" bioc:fill="#DCFCE7" bioc:stroke="#15803D">
+        <dc:Bounds x="506.66666666666663" y="860" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_join_shape" bpmnElement="r_join" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="351.0" y="995" width="58" height="58" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_approve_shape" bpmnElement="r_approve" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="290.0" y="1130" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F19_shape" bpmnElement="F19" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="1265" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="r_end_shape" bpmnElement="r_end" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="1400" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="1451" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="result_flow_0_edge" bpmnElement="result_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_1_edge" bpmnElement="result_flow_1">
+        <di:waypoint x="380.0" y="273" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="217.5" y="296.5" />
+        <di:waypoint x="217.5" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_2_edge" bpmnElement="result_flow_2">
+        <di:waypoint x="307.5" y="364.0" />
+        <di:waypoint x="452.5" y="364.0" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_3_edge" bpmnElement="result_flow_3">
+        <di:waypoint x="542.5" y="408" />
+        <di:waypoint x="542.5" y="431.5" />
+        <di:waypoint x="380.0" y="431.5" />
+        <di:waypoint x="380.0" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_4_edge" bpmnElement="result_flow_4">
+        <di:waypoint x="380.0" y="513" />
+        <di:waypoint x="380.0" y="551.5" />
+        <di:waypoint x="217.5" y="551.5" />
+        <di:waypoint x="217.5" y="590" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="223.5" y="531.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_5_edge" bpmnElement="result_flow_5">
+        <di:waypoint x="380.0" y="513" />
+        <di:waypoint x="380.0" y="551.5" />
+        <di:waypoint x="542.5" y="551.5" />
+        <di:waypoint x="542.5" y="590" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="548.5" y="531.5" width="100" height="22" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_6_edge" bpmnElement="result_flow_6">
+        <di:waypoint x="217.5" y="678" />
+        <di:waypoint x="217.5" y="701.5" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_7_edge" bpmnElement="result_flow_7">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="163.33333333333331" y="821.5" />
+        <di:waypoint x="163.33333333333331" y="860" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_8_edge" bpmnElement="result_flow_8">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="379.99999999999994" y="821.5" />
+        <di:waypoint x="379.99999999999994" y="860" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_9_edge" bpmnElement="result_flow_9">
+        <di:waypoint x="380.0" y="783" />
+        <di:waypoint x="380.0" y="821.5" />
+        <di:waypoint x="596.6666666666666" y="821.5" />
+        <di:waypoint x="596.6666666666666" y="860" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_10_edge" bpmnElement="result_flow_10">
+        <di:waypoint x="163.33333333333331" y="948" />
+        <di:waypoint x="163.33333333333331" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_11_edge" bpmnElement="result_flow_11">
+        <di:waypoint x="379.99999999999994" y="948" />
+        <di:waypoint x="379.99999999999994" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_12_edge" bpmnElement="result_flow_12">
+        <di:waypoint x="596.6666666666666" y="948" />
+        <di:waypoint x="596.6666666666666" y="971.5" />
+        <di:waypoint x="380.0" y="971.5" />
+        <di:waypoint x="380.0" y="995" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_13_edge" bpmnElement="result_flow_13">
+        <di:waypoint x="380.0" y="1053" />
+        <di:waypoint x="380.0" y="1091.5" />
+        <di:waypoint x="380.0" y="1091.5" />
+        <di:waypoint x="380.0" y="1130" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_14_edge" bpmnElement="result_flow_14">
+        <di:waypoint x="380.0" y="1218" />
+        <di:waypoint x="380.0" y="1241.5" />
+        <di:waypoint x="380.0" y="1241.5" />
+        <di:waypoint x="380.0" y="1265" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="result_flow_15_edge" bpmnElement="result_flow_15">
+        <di:waypoint x="380.0" y="1353" />
+        <di:waypoint x="380.0" y="1376.5" />
+        <di:waypoint x="380.0" y="1376.5" />
+        <di:waypoint x="380.0" y="1400" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="operations_diagram" name="5. Подготовка к запуску">
+    <bpmndi:BPMNPlane id="operations_plane" bpmnElement="OperationsProcess">
+      <bpmndi:BPMNShape id="o_start_shape" bpmnElement="o_start" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="50" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="101" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F28_shape" bpmnElement="F28" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="185" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F26_shape" bpmnElement="F26" bioc:fill="#E5E7EB" bioc:stroke="#64748B">
+        <dc:Bounds x="127.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F27_shape" bpmnElement="F27" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="452.5" y="320" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F29_shape" bpmnElement="F29" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="455" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F31_shape" bpmnElement="F31" bioc:fill="#FEF3C7" bioc:stroke="#A16207">
+        <dc:Bounds x="290.0" y="590" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="F32_shape" bpmnElement="F32" bioc:fill="#FEE2E2" bioc:stroke="#B91C1C">
+        <dc:Bounds x="290.0" y="725" width="180" height="88" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="o_end_shape" bpmnElement="o_end" bioc:fill="#FFFFFF" bioc:stroke="#475569">
+        <dc:Bounds x="357.0" y="860" width="46" height="46" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="287.0" y="911" width="186" height="30" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="operations_flow_0_edge" bpmnElement="operations_flow_0">
+        <di:waypoint x="380.0" y="96" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="140.5" />
+        <di:waypoint x="380.0" y="185" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_1_edge" bpmnElement="operations_flow_1">
+        <di:waypoint x="380.0" y="273" />
+        <di:waypoint x="380.0" y="296.5" />
+        <di:waypoint x="217.5" y="296.5" />
+        <di:waypoint x="217.5" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_2_edge" bpmnElement="operations_flow_2">
+        <di:waypoint x="307.5" y="364.0" />
+        <di:waypoint x="452.5" y="364.0" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_3_edge" bpmnElement="operations_flow_3">
+        <di:waypoint x="542.5" y="408" />
+        <di:waypoint x="542.5" y="431.5" />
+        <di:waypoint x="380.0" y="431.5" />
+        <di:waypoint x="380.0" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_4_edge" bpmnElement="operations_flow_4">
+        <di:waypoint x="380.0" y="543" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="566.5" />
+        <di:waypoint x="380.0" y="590" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_5_edge" bpmnElement="operations_flow_5">
+        <di:waypoint x="380.0" y="678" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="701.5" />
+        <di:waypoint x="380.0" y="725" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="operations_flow_6_edge" bpmnElement="operations_flow_6">
+        <di:waypoint x="380.0" y="813" />
+        <di:waypoint x="380.0" y="836.5" />
+        <di:waypoint x="380.0" y="836.5" />
+        <di:waypoint x="380.0" y="860" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
