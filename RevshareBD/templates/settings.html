@@ -44,13 +44,33 @@
 <section class="card wide-form tab-panel {{ 'active' if active_tab == 'bot' else '' }}" data-panel="bot">
   <h2>{{ t("bot_tab_title") }}</h2>
   {% if bot_ready %}
-  <p class="hint"><strong>{{ t("bot_status_connected") }}</strong> · {{ t("bot_username_label") }}: <code>@{{ bot_username }}</code></p>
+  <p class="hint"><strong>{{ t("bot_status_connected") }}</strong> · {{ t("bot_username_label") }}: <code>@{{ bot_username }}</code>{% if active_bot and active_bot.telegram_bot_id %} · ID: <code>{{ active_bot.telegram_bot_id }}</code>{% endif %}</p>
   <p class="hint">{{ t("bot_capabilities") }}</p>
   {% if not public_form_url %}
   <p class="hint">{{ t("public_url_missing") }}</p>
   {% endif %}
   {% else %}
   <p class="hint">{{ t("telegram_bot_missing") }}</p>
+  {% endif %}
+  {% if bot_saved %}<div class="notice neutral">{{ t("bot_token_saved") }}</div>{% endif %}
+  {% if bot_removed %}<div class="notice neutral">{{ t("bot_token_removed") }}</div>{% endif %}
+  {% if bot_error %}<div class="notice error">{{ t("bot_token_invalid") }}</div>{% endif %}
+  <form method="post" action="/admin/settings/bot" class="form-section compact-section">
+    {{ csrf_field(csrf_token) }}
+    <div class="field">
+      <label for="bot_token">{{ t("bot_token_label") }}</label>
+      <input id="bot_token" name="bot_token" type="password" autocomplete="new-password" placeholder="123456789:AA...">
+      <small>{{ t("bot_token_hint") }}</small>
+    </div>
+    <div class="form-actions">
+      <button class="button" type="submit">{{ t("bot_token_apply") }}</button>
+    </div>
+  </form>
+  {% if bot_ready %}
+  <form method="post" action="/admin/settings/bot/remove" class="form-actions" data-confirm="{{ t('bot_token_remove_confirm') }}">
+    {{ csrf_field(csrf_token) }}
+    <button class="button secondary" type="submit">{{ t("bot_token_remove") }}</button>
+  </form>
   {% endif %}
 </section>
 

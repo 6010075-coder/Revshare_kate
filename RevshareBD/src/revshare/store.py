@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 from urllib.parse import urlparse
@@ -24,6 +25,7 @@ from revshare.notifications import (
     normalize_schedule,
     notice_language,
 )
+from revshare.bot_context import current_bot_id, current_file_id
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = ROOT / "data" / "revshare.db"
@@ -627,6 +629,8 @@ class Store:
                     extraction_notes TEXT NOT NULL,
                     application_breakdown TEXT NOT NULL DEFAULT '[]',
                     application_id INTEGER,
+                    file_id INTEGER,
+                    source_bot_id INTEGER,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS report_claims (
@@ -659,6 +663,8 @@ class Store:
                     attachment TEXT,
                     submitted_at TEXT NOT NULL,
                     application_breakdown TEXT NOT NULL DEFAULT '[]',
+                    file_id INTEGER,
+                    source_bot_id INTEGER,
                     UNIQUE(report_id, version)
                 );
                 """
@@ -754,6 +760,8 @@ class Store:
                     report_id INTEGER,
                     draft_id INTEGER,
                     period TEXT,
+                    bot_id INTEGER,
+                    file_id INTEGER,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -786,6 +794,160 @@ class Store:
                 db.execute(
                     "ALTER TABLE report_versions ADD COLUMN claims TEXT NOT NULL DEFAULT '[]'"
                 )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id INTEGER NOT NULL,
+                    report_version_id INTEGER,
+                    workflow_status TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    actor TEXT NOT NULL DEFAULT '',
+                    bot_id INTEGER,
+                    file_id INTEGER,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            event_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(report_events)").fetchall()
+            }
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_bots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_bot_id INTEGER NOT NULL UNIQUE,
+                    username TEXT NOT NULL DEFAULT '',
+                    first_name TEXT NOT NULL DEFAULT '',
+                    token_fingerprint TEXT NOT NULL DEFAULT '',
+                    is_active INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS uploaded_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    storage_name TEXT NOT NULL UNIQUE,
+                    original_name TEXT NOT NULL DEFAULT '',
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'unknown',
+                    partner_id INTEGER,
+                    bot_id INTEGER,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            for table, columns in {
+                "reports": {
+                    "file_id": "INTEGER",
+                    "source_bot_id": "INTEGER",
+                },
+                "report_drafts": {
+                    "file_id": "INTEGER",
+                    "source_bot_id": "INTEGER",
+                },
+                "report_versions": {
+                    "file_id": "INTEGER",
+                    "source_bot_id": "INTEGER",
+                },
+                "bot_interactions": {"bot_id": "INTEGER", "file_id": "INTEGER"},
+                "report_events": {"bot_id": "INTEGER", "file_id": "INTEGER"},
+            }.items():
+                existing_columns = {
+                    row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                for column, definition in columns.items():
+                    if column not in existing_columns:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            # Backfill metadata for existing report files without changing
+            # their paths or bytes. Files that are no longer on disk remain
+            # legacy path-only records and are not guessed or recreated.
+            legacy_files = db.execute(
+                """
+                SELECT 'reports' AS table_name, r.id AS row_id, r.partner_id,
+                       r.attachment, r.report_source AS source
+                FROM reports r
+                WHERE r.attachment IS NOT NULL AND r.attachment != '' AND r.file_id IS NULL
+                UNION ALL
+                SELECT 'report_drafts', d.id, d.partner_id, d.attachment, 'legacy'
+                FROM report_drafts d
+                WHERE d.attachment IS NOT NULL AND d.attachment != '' AND d.file_id IS NULL
+                UNION ALL
+                SELECT 'report_versions', v.id, r.partner_id, v.attachment, r.report_source
+                FROM report_versions v
+                JOIN reports r ON r.id = v.report_id
+                WHERE v.attachment IS NOT NULL AND v.attachment != '' AND v.file_id IS NULL
+                """
+            ).fetchall()
+            for legacy in legacy_files:
+                storage_name = str(legacy["attachment"])
+                path = ROOT / "data" / "uploads" / storage_name
+                if not path.is_file():
+                    continue
+                raw = path.read_bytes()
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO uploaded_files
+                        (storage_name, original_name, sha256, size_bytes, source,
+                         partner_id, created_at)
+                    VALUES (?, ?, ?, ?, 'legacy', ?, ?)
+                    """,
+                    (
+                        storage_name,
+                        path.name,
+                        hashlib.sha256(raw).hexdigest(),
+                        len(raw),
+                        legacy["partner_id"],
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                file_row = db.execute(
+                    "SELECT id FROM uploaded_files WHERE storage_name = ?",
+                    (storage_name,),
+                ).fetchone()
+                if file_row:
+                    db.execute(
+                        f"UPDATE {legacy['table_name']} SET file_id = ? WHERE id = ?",
+                        (file_row["id"], legacy["row_id"]),
+                    )
+            if "report_version_id" not in event_columns:
+                db.execute(
+                    "ALTER TABLE report_events ADD COLUMN report_version_id INTEGER"
+                )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_events_version ON report_events(report_version_id)"
+            )
+            # Older installations did not retain the version link on events.
+            # Recover it conservatively from immutable submission times.
+            db.execute(
+                """
+                UPDATE report_events AS e
+                SET report_version_id = (
+                    SELECT rv.id
+                    FROM report_versions AS rv
+                    WHERE rv.report_id = e.report_id
+                      AND rv.submitted_at <= e.created_at
+                    ORDER BY
+                        CASE
+                            WHEN e.note IN ('submitted', 'resubmitted', 'manual')
+                                 AND rv.submitted_at = e.created_at
+                            THEN 0 ELSE 1
+                        END,
+                        rv.submitted_at DESC,
+                        rv.id DESC
+                    LIMIT 1
+                )
+                WHERE e.report_version_id IS NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM report_versions AS rv
+                    WHERE rv.report_id = e.report_id
+                      AND rv.submitted_at <= e.created_at
+                  )
+                """
+            )
             application_columns = {
                 row["name"]
                 for row in db.execute("PRAGMA table_info(partner_applications)").fetchall()
@@ -893,6 +1055,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS report_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     report_id INTEGER NOT NULL,
+                    report_version_id INTEGER,
                     workflow_status TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
                     actor TEXT NOT NULL DEFAULT '',
@@ -1872,7 +2035,7 @@ class Store:
                 """
                 SELECT id AS report_id, period, turnover, currency, reported_share,
                 contract_rate,
-                client_count, status, risk_level, risk_score, submitted_at,
+                client_count, status, workflow_status, risk_level, risk_score, submitted_at,
                 report_source, reasons
                 FROM reports WHERE partner_id = ?
                 ORDER BY period DESC LIMIT ?
@@ -1910,6 +2073,114 @@ class Store:
             history.append(item)
         return history
 
+    def partner_report_periods(self, partner_id: int, limit: int = 24) -> list[dict]:
+        """Return one navigable history item per reporting period.
+
+        The profile page is organised by month, not by storage object. A
+        period may therefore have a confirmed report, an unconfirmed draft,
+        or both. Existing report statuses remain the only statuses exposed
+        to the UI; drafts are represented as history entries for the period.
+        """
+        reports = self.partner_history(partner_id, limit=1000)
+        drafts = self.drafts_for_partner(partner_id)
+        by_period: dict[str, dict[str, list[dict]]] = {}
+        for report in reports:
+            by_period.setdefault(report["period"], {"reports": [], "drafts": []})[
+                "reports"
+            ].append(report)
+        for draft in drafts:
+            by_period.setdefault(draft["period"], {"reports": [], "drafts": []})[
+                "drafts"
+            ].append(draft)
+
+        periods: list[dict] = []
+        for period, values in by_period.items():
+            period_reports = sorted(
+                values["reports"],
+                key=lambda item: (item.get("submitted_at") or "", item["report_id"]),
+                reverse=True,
+            )
+            period_drafts = sorted(
+                values["drafts"],
+                key=lambda item: (item.get("created_at") or "", item["id"]),
+                reverse=True,
+            )
+            activity_dates = [
+                item.get("submitted_at") for item in period_reports
+            ] + [item.get("created_at") for item in period_drafts]
+            periods.append(
+                {
+                    "period": period,
+                    "report": period_reports[0] if period_reports else None,
+                    "reports": period_reports,
+                    "drafts": period_drafts,
+                    "last_activity_at": max(
+                        (value for value in activity_dates if value),
+                        default="",
+                    ),
+                }
+            )
+        periods.sort(key=lambda item: (item["period"], item["last_activity_at"]), reverse=True)
+        return periods[:limit]
+
+    def partner_period_history(self, partner_id: int, period: str) -> list[dict]:
+        """Merge report events and unconfirmed file uploads for one period."""
+        with self.connect() as db:
+            report_rows = db.execute(
+                """
+                SELECT id
+                FROM reports
+                WHERE partner_id = ? AND period = ?
+                ORDER BY submitted_at DESC, id DESC
+                """,
+                (partner_id, period),
+            ).fetchall()
+            draft_rows = db.execute(
+                """
+                SELECT id, period, application_id, attachment, turnover,
+                       currency, reported_share, created_at
+                FROM report_drafts
+                WHERE partner_id = ? AND period = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (partner_id, period),
+            ).fetchall()
+
+        entries: list[dict] = []
+        for row in report_rows:
+            report = self.report(int(row["id"]))
+            if not report:
+                continue
+            latest_version = report["versions"][0]["version"] if report["versions"] else None
+            for event in report["history"]:
+                entries.append(
+                    {
+                        **event,
+                        "kind": "report_event",
+                        "report_id": report["id"],
+                        "report_period": period,
+                        "latest_version": latest_version,
+                    }
+                )
+
+        for row in draft_rows:
+            entries.append(
+                {
+                    "kind": "draft_upload",
+                    "id": -int(row["id"]),
+                    "draft_id": int(row["id"]),
+                    "report_period": period,
+                    "created_at": row["created_at"],
+                    "draft": dict(row),
+                }
+            )
+
+        entries.sort(
+            key=lambda item: (item.get("created_at") or "", item.get("id") or 0),
+            reverse=True,
+        )
+        return entries
+
     def report_id_for(
         self, partner_id: int, period: str, application_id: int | None = None
     ) -> int | None:
@@ -1945,21 +2216,44 @@ class Store:
         note: str,
         actor: str = "",
         created_at: str | None = None,
+        version_id: int | None = None,
+        bot_id: int | None = None,
+        file_id: int | None = None,
     ) -> None:
         db.execute(
             """
             INSERT INTO report_events
-            (report_id, workflow_status, note, actor, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            (report_id, report_version_id, workflow_status, note, actor, bot_id,
+             file_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_id,
+                version_id,
                 workflow_status,
                 note,
                 actor,
+                bot_id if bot_id is not None else current_bot_id(),
+                file_id,
                 created_at or datetime.now(UTC).isoformat(),
             ),
         )
+
+    @staticmethod
+    def _latest_report_version_id(
+        db: sqlite3.Connection, report_id: int
+    ) -> int | None:
+        row = db.execute(
+            """
+            SELECT id
+            FROM report_versions
+            WHERE report_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (report_id,),
+        ).fetchone()
+        return int(row["id"]) if row else None
 
     def _status_snapshot(self, db: sqlite3.Connection, period: str) -> dict[int, tuple]:
         """Remember visible report status and its timestamp before a recheck."""
@@ -2050,6 +2344,7 @@ class Store:
                     "needs_review",
                     "snapshot_recheck",
                     actor="system",
+                    version_id=self._latest_report_version_id(db, report_id),
                 )
             return
         location_ids = [
@@ -2144,6 +2439,7 @@ class Store:
                 new_workflow,
                 "snapshot_recheck",
                 actor="system",
+                version_id=self._latest_report_version_id(db, report_id),
             )
         # A partner report is reconciled against locations that were active
         # during the reporting month. Connected locations without activity
@@ -2290,6 +2586,7 @@ class Store:
                     "needs_review",
                     "cross_partner",
                     actor="system",
+                    version_id=self._latest_report_version_id(db, report["id"]),
                 )
 
     def create_report_draft(
@@ -2304,6 +2601,8 @@ class Store:
         extraction_notes: list[str],
         application_breakdown: list[dict[str, object]] | None = None,
         application_id: int | None = None,
+        file_id: int | None = None,
+        source_bot_id: int | None = None,
     ) -> str:
         token = secrets.token_urlsafe(24)
         with self.connect() as db:
@@ -2327,8 +2626,8 @@ class Store:
                 INSERT INTO report_drafts
                 (token, partner_id, period, attachment, turnover, currency,
                 reported_share, location_ids, extraction_notes, application_breakdown,
-                application_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                application_id, file_id, source_bot_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token,
@@ -2342,6 +2641,8 @@ class Store:
                     json.dumps(extraction_notes),
                     json.dumps(application_breakdown or [], ensure_ascii=False),
                     application_id,
+                    file_id,
+                    source_bot_id if source_bot_id is not None else current_bot_id(),
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -2433,6 +2734,8 @@ class Store:
         location_ids: list[str],
         extraction_notes: list[str],
         application_breakdown: list[dict[str, object]],
+        file_id: int | None = None,
+        source_bot_id: int | None = None,
     ) -> int:
         """Insert or replace a draft created from a Telegram bot submission."""
         import secrets as _secrets
@@ -2454,8 +2757,8 @@ class Store:
                 INSERT INTO report_drafts (
                     token, partner_id, period, attachment, turnover,
                     currency, reported_share, location_ids, extraction_notes,
-                    application_breakdown, application_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    application_breakdown, application_id, file_id, source_bot_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token,
@@ -2469,6 +2772,8 @@ class Store:
                     json.dumps(extraction_notes),
                     json.dumps(application_breakdown),
                     application_id,
+                    file_id,
+                    source_bot_id if source_bot_id is not None else current_bot_id(),
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -2520,8 +2825,8 @@ class Store:
     def drafts_for_partner(self, partner_id: int) -> list[dict]:
         """Return all bot-created drafts for a partner, newest first.
 
-        Used by the admin profile page so admins can review and delete
-        drafts that the partner has not yet confirmed.
+        Used by the admin profile page so admins can review files that have
+        not yet been confirmed.
         """
         with self.connect() as db:
             rows = db.execute(
@@ -2536,20 +2841,98 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def delete_draft(self, draft_id: int, partner_id: int) -> bool:
-        """Hard-delete a draft owned by the given partner.
+    def register_telegram_bot(
+        self,
+        telegram_bot_id: int,
+        username: str = "",
+        first_name: str = "",
+        token_fingerprint: str = "",
+    ) -> int:
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            db.execute(
+                "UPDATE telegram_bots SET is_active = 0 WHERE telegram_bot_id != ?",
+                (telegram_bot_id,),
+            )
+            db.execute(
+                """
+                INSERT INTO telegram_bots
+                    (telegram_bot_id, username, first_name, token_fingerprint,
+                     is_active, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(telegram_bot_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    token_fingerprint = excluded.token_fingerprint,
+                    is_active = 1,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    int(telegram_bot_id),
+                    username,
+                    first_name,
+                    token_fingerprint,
+                    now,
+                    now,
+                ),
+            )
+            row = db.execute(
+                "SELECT id FROM telegram_bots WHERE telegram_bot_id = ?",
+                (telegram_bot_id,),
+            ).fetchone()
+        return int(row["id"])
 
-        Returns True if a row was removed, False if the draft did not
-        exist or belonged to a different partner. The partner_id check
-        prevents an admin from deleting another partner's draft by
-        guessing draft ids.
-        """
+    def active_telegram_bot(self) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM telegram_bots WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def deactivate_telegram_bots(self) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE telegram_bots SET is_active = 0 WHERE is_active = 1")
+
+    def register_uploaded_file(
+        self,
+        storage_name: str,
+        *,
+        original_name: str = "",
+        mime_type: str = "",
+        source: str = "unknown",
+        partner_id: int | None = None,
+        bot_id: int | None = None,
+        storage_path: Path | None = None,
+    ) -> int:
+        path = storage_path or (ROOT / "data" / "uploads" / storage_name)
+        raw = path.read_bytes()
+        bot_id = bot_id if bot_id is not None else current_bot_id()
         with self.connect() as db:
             cursor = db.execute(
-                "DELETE FROM report_drafts WHERE id = ? AND partner_id = ?",
-                (draft_id, partner_id),
+                """
+                INSERT INTO uploaded_files
+                    (storage_name, original_name, sha256, size_bytes, mime_type,
+                     source, partner_id, bot_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    storage_name,
+                    original_name,
+                    hashlib.sha256(raw).hexdigest(),
+                    len(raw),
+                    mime_type,
+                    source,
+                    partner_id,
+                    bot_id,
+                    datetime.now(UTC).isoformat(),
+                ),
             )
-        return cursor.rowcount > 0
+        return int(cursor.lastrowid)
+
+    def uploaded_file(self, file_id: int) -> dict | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM uploaded_files WHERE id = ?", (file_id,)).fetchone()
+        return dict(row) if row else None
 
     def log_bot_interaction(
         self,
@@ -2563,14 +2946,18 @@ class Store:
         report_id: int | None = None,
         draft_id: int | None = None,
         period: str | None = None,
+        bot_id: int | None = None,
+        file_id: int | None = None,
     ) -> int:
+        bot_id = bot_id if bot_id is not None else current_bot_id()
+        file_id = file_id if file_id is not None else current_file_id()
         with self.connect() as db:
             cursor = db.execute(
                 """
                 INSERT INTO bot_interactions (
                     partner_id, chat_id, update_id, kind, direction,
-                    payload, response, report_id, draft_id, period, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    payload, response, report_id, draft_id, period, bot_id, file_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     partner_id,
@@ -2583,6 +2970,8 @@ class Store:
                     report_id,
                     draft_id,
                     period,
+                    bot_id,
+                    file_id,
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -2623,7 +3012,12 @@ class Store:
         event_workflow_status: str | None = None,
         event_note: str | None = None,
         event_actor: str = "partner",
+        file_id: int | None = None,
+        source_bot_id: int | None = None,
     ) -> tuple[int, Review]:
+        source_bot_id = (
+            source_bot_id if source_bot_id is not None else current_bot_id()
+        )
         # Step 3: prefer the new reconciliation base over the legacy Altegio
         # BI snapshot. The base is the authoritative source for ``connected``
         # and ``active`` ids as of this step. If no base has been uploaded
@@ -2735,8 +3129,9 @@ class Store:
                     contract_rate = ?, client_count = ?, status = ?, risk_level = ?, risk_score = ?,
                     reasons = ?, missing_active = ?, unknown_locations = ?,
                     comment = ?, attachment = ?, report_source = ?, submitted_at = ?,
-                    workflow_status = ?, application_breakdown = ?,
-                    approved_at = NULL, approved_by = NULL, status_updated_at = ?
+                    workflow_status = ?, application_breakdown = ?, file_id = ?,
+                    source_bot_id = ?, approved_at = NULL, approved_by = NULL,
+                    status_updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -2757,6 +3152,8 @@ class Store:
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
+                        file_id,
+                        source_bot_id,
                         now,
                         report_id,
                     ),
@@ -2770,8 +3167,9 @@ class Store:
                     (partner_id, period, application_id, turnover, currency, reported_share, contract_rate,
                     client_count, status, risk_level, risk_score, reasons,
                     missing_active, unknown_locations, comment, attachment, report_source, submitted_at,
-                    workflow_status, application_breakdown, status_updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    workflow_status, application_breakdown, file_id, source_bot_id,
+                    status_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         partner_id,
@@ -2794,6 +3192,8 @@ class Store:
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
+                        file_id,
+                        source_bot_id,
                         now,
                     ),
                 )
@@ -2805,8 +3205,9 @@ class Store:
                     (partner_id, period, application_id, turnover, currency, reported_share, contract_rate,
                     client_count, status, risk_level, risk_score, reasons,
                     missing_active, unknown_locations, comment, attachment, report_source, submitted_at,
-                    workflow_status, application_breakdown, status_updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    workflow_status, application_breakdown, file_id, source_bot_id,
+                    status_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         partner_id,
@@ -2829,6 +3230,8 @@ class Store:
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
+                        file_id,
+                        source_bot_id,
                         now,
                     ),
                 )
@@ -2876,14 +3279,14 @@ class Store:
                 """,
                 (report_id,),
             ).fetchone()[0]
-            db.execute(
+            version_insert = db.execute(
                 """
                 INSERT INTO report_versions
                 (report_id, version, turnover, currency, reported_share, contract_rate,
                 client_count, status, risk_level, risk_score, reasons,
                 missing_active, unknown_locations, claims, comment, attachment,
-                submitted_at, application_breakdown, line_items)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                submitted_at, application_breakdown, line_items, file_id, source_bot_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -2905,8 +3308,11 @@ class Store:
                     now,
                     json.dumps(application_breakdown or [], ensure_ascii=False),
                     json.dumps(_flatten_line_items(application_breakdown), ensure_ascii=False),
+                    file_id,
+                    source_bot_id,
                 ),
             )
+            version_id = int(version_insert.lastrowid)
             self._log_report_event(
                 db,
                 report_id,
@@ -2914,6 +3320,9 @@ class Store:
                 event_note or ("resubmitted" if existing else "submitted"),
                 actor=event_actor,
                 created_at=now,
+                version_id=version_id,
+                bot_id=source_bot_id,
+                file_id=file_id,
             )
             previous = db.execute(
                 """
@@ -3104,10 +3513,11 @@ class Store:
         with self.connect() as db:
             versions = db.execute(
                 """
-                SELECT version, turnover, currency, reported_share, contract_rate, client_count,
+                SELECT id, version, turnover, currency, reported_share, contract_rate, client_count,
                        status, risk_level, risk_score, reasons, comment,
                        missing_active, unknown_locations, claims,
-                       attachment, submitted_at, application_breakdown, line_items
+                       attachment, submitted_at, application_breakdown, line_items,
+                       file_id, source_bot_id
                 FROM report_versions
                 WHERE report_id = ?
                 ORDER BY version DESC
@@ -3125,20 +3535,52 @@ class Store:
                     version["application_breakdown"] or "[]"
                 ),
                 "line_items": json.loads(version["line_items"] or "[]"),
+                "has_attachment": bool(version["attachment"]),
             }
             for version in versions
         ]
+        versions_by_id = {version["id"]: version for version in item["versions"]}
         with self.connect() as db:
             events = db.execute(
                 """
-                SELECT workflow_status, note, actor, created_at
+                SELECT id, report_version_id, workflow_status, note, actor, bot_id,
+                       file_id, created_at
                 FROM report_events
                 WHERE report_id = ?
                 ORDER BY id DESC
                 """,
                 (report_id,),
             ).fetchall()
-        item["status_log"] = [dict(event) for event in events]
+            bot_rows = db.execute(
+                "SELECT id, telegram_bot_id, username, first_name FROM telegram_bots"
+            ).fetchall()
+        bots_by_id = {int(row["id"]): dict(row) for row in bot_rows}
+        item["status_log"] = []
+        for event in events:
+            entry = dict(event)
+            # Older manually entered reports were written through the
+            # partner-submission path. Present those historical events with
+            # the correct meaning without rewriting the audit table.
+            if (
+                item.get("report_source") == "manual"
+                and entry["note"] in {"submitted", "resubmitted"}
+                and entry["actor"] == "partner"
+            ):
+                entry["workflow_status"] = "manual"
+                entry["note"] = "manual"
+                entry["actor"] = "admin"
+            entry["version_snapshot"] = versions_by_id.get(entry["report_version_id"])
+            entry["bot"] = bots_by_id.get(
+                entry.get("bot_id")
+                or (entry["version_snapshot"] or {}).get("source_bot_id")
+            )
+            entry["version_relation"] = (
+                "created"
+                if entry["note"] in {"submitted", "resubmitted", "manual"}
+                else "related"
+            ) if entry["version_snapshot"] else None
+            item["status_log"].append(entry)
+        item["history"] = item["status_log"]
         return item
 
     def approve_report(self, report_id: int, approved_by: str = "admin") -> bool:
@@ -3166,6 +3608,7 @@ class Store:
                     "approved",
                     actor=approved_by,
                     created_at=now,
+                    version_id=self._latest_report_version_id(db, report_id),
                 )
         return True
 
@@ -3227,6 +3670,7 @@ class Store:
                 "queued",
                 actor="system",
                 created_at=now,
+                version_id=self._latest_report_version_id(db, report_id),
             )
         return True
 
@@ -3268,6 +3712,7 @@ class Store:
                 "approval_reverted",
                 actor=actor,
                 created_at=now,
+                version_id=self._latest_report_version_id(db, report_id),
             )
         return True
 
@@ -3300,6 +3745,7 @@ class Store:
                 "post_reverted",
                 actor=actor,
                 created_at=now,
+                version_id=self._latest_report_version_id(db, report_id),
             )
         return True
 

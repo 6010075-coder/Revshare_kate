@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from revshare.bot import poll_forever
+from revshare.bot import telegram_supervisor
 from revshare.dispatch import send_due_notices
 from revshare.fx import fetch_month_average_rates
 from revshare.altegio_sync import sync_period
@@ -74,10 +74,7 @@ async def run_worker() -> None:
         asyncio.create_task(_fx_autoload_loop(store)),
         asyncio.create_task(_altegio_sync_loop(store)),
     ]
-    if telegram_token():
-        tasks.append(asyncio.create_task(poll_forever(store)))
-    else:
-        log.warning("TELEGRAM_BOT_TOKEN is not configured; Telegram polling is disabled")
+    tasks.append(asyncio.create_task(telegram_supervisor(store)))
     try:
         await asyncio.gather(*tasks)
     finally:

@@ -7,6 +7,7 @@ import csv
 import hmac
 import io
 import json
+import hashlib
 import logging
 import os
 import re
@@ -17,7 +18,7 @@ from urllib.parse import urlencode, urlparse
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from revshare.countries import (
@@ -76,7 +77,7 @@ from revshare.notifications import (
     settings_from_form,
 )
 from revshare.report_template import build_report_template_xlsx
-from revshare.secrets import load_secrets, public_base_url, telegram_token
+from revshare.secrets import load_secrets, public_base_url, set_secret, telegram_token
 from revshare.timezone import format_local_datetime, utc_now_iso
 from revshare.sheet_sync import flush_queued_sheet_writes
 from revshare import sheets
@@ -90,6 +91,7 @@ from revshare.store import (
     normalize_application_links,
     normalize_ids,
 )
+from revshare.telegram import get_me
 
 
 def _load_connected_active_ids_for_test(
@@ -599,9 +601,9 @@ async def lifespan(app: FastAPI):
     tasks: list[asyncio.Task] = []
     testing = bool(os.getenv("PYTEST_CURRENT_TEST"))
     if app.state.web_background_tasks and telegram_token() and not testing:
-        from revshare.bot import poll_forever
+        from revshare.bot import telegram_supervisor
 
-        tasks.append(asyncio.create_task(poll_forever(app.state.store)))
+        tasks.append(asyncio.create_task(telegram_supervisor(app.state.store)))
     if app.state.web_background_tasks and app.state.store.fx_loader and not testing:
         tasks.append(asyncio.create_task(_fx_autoload_loop(app.state.store)))
     if (
@@ -856,6 +858,11 @@ def create_app(
         partner_page = "language_override" in values
         language = str(values.pop("language_override", "")) or current_language(request)
         selected_period = str(values.get("period") or current_period())
+        period_years = [int(value[:4]) for value in recent_periods(selected_period)]
+        period_year_options = list(range(min(period_years), 2031))
+        if int(selected_period[:4]) not in period_year_options:
+            period_year_options.append(int(selected_period[:4]))
+            period_year_options.sort()
         path = request.url.path
         query = str(request.url.query)
         language_next = path + (f"?{query}" if query else "")
@@ -864,6 +871,7 @@ def create_app(
             "request": request,
             "current_period": current_period(),
             "period_options": recent_periods(selected_period),
+            "period_year_options": period_year_options,
             "lang": language,
             "partner_page": partner_page,
             "admin_logged_in": admin_logged_in,
@@ -897,13 +905,20 @@ def create_app(
     def dashboard(
         request: Request,
         period: str | None = None,
+        period_year: str | None = None,
+        period_month: str | None = None,
         status: str = "all",
         risk: str = "all",
         q: str = "",
         sort: str = "status_updated",
         dir: str = "desc",
     ):
-        selected = valid_period(period) or current_period()
+        split_period = (
+            f"{period_year}-{period_month}"
+            if period_year and period_month
+            else ""
+        )
+        selected = valid_period(split_period) or valid_period(period) or current_period()
         items = app.state.store.dashboard(selected)
         counts = {
             "total": len(items),
@@ -1214,6 +1229,13 @@ def create_app(
             bound_application_id = int(configured_apps[0][1])
         else:
             bound_application_id = None
+        file_id = app.state.store.register_uploaded_file(
+            attachment_name,
+            original_name=attachment.filename,
+            mime_type=str(attachment.content_type or ""),
+            source="partner_web",
+            partner_id=partner["id"],
+        )
         draft_token = app.state.store.create_report_draft(
             partner_id=partner["id"],
             period=selected_period,
@@ -1225,6 +1247,7 @@ def create_app(
             extraction_notes=parsed.notes,
             application_breakdown=application_breakdown,
             application_id=bound_application_id,
+            file_id=file_id,
         )
         # If the hourly worker has not populated this month yet, run the same
         # read-only comparison now so the partner sees a real result straight
@@ -1890,6 +1913,7 @@ def create_app(
             # application (e.g. when an admin entered the report directly)
             # still submits with application_id=None.
             application_id=draft.get("application_id"),
+            file_id=draft.get("file_id"),
         )
         app.state.store.delete_report_draft(draft_token, partner["id"])
         return TEMPLATES.TemplateResponse(
@@ -2304,7 +2328,7 @@ def create_app(
         tab: str = "",
         saved: str = "",
         view: str = "",
-        deleted: str = "",
+        period: str = "",
     ):
         partner = app.state.store.partner(partner_id)
         if not partner or not partner["active"]:
@@ -2314,10 +2338,30 @@ def create_app(
             payload["legal_country"], current_language(request)
         )
         settings = payload["notice_settings"]
-        history = app.state.store.partner_history(partner_id)
-        # History tab can show either confirmed reports (default) or
-        # bot-created drafts waiting for partner confirmation.
-        history_view = view if view in ("reports", "drafts") else "reports"
+        report_periods = app.state.store.partner_report_periods(partner_id)
+        requested_period = valid_period(period) if period else ""
+        available_periods = {item["period"] for item in report_periods}
+        selected_period = (
+            requested_period if requested_period in available_periods else ""
+        )
+        if not selected_period and report_periods:
+            selected_period = report_periods[0]["period"]
+        selected_period_item = next(
+            (
+                item
+                for item in report_periods
+                if item["period"] == selected_period
+            ),
+            None,
+        )
+        selected_period_report = (
+            selected_period_item["report"] if selected_period_item else None
+        )
+        selected_period_history = (
+            app.state.store.partner_period_history(partner_id, selected_period)
+            if selected_period
+            else []
+        )
         drafts = app.state.store.drafts_for_partner(partner_id)
         bot_username = (
             app.state.store.setting("telegram_bot_username")
@@ -2338,10 +2382,12 @@ def create_app(
             context(
                 request,
                 partner=payload,
-                history=history,
+                    history=app.state.store.partner_history(partner_id),
                 drafts=drafts,
-                history_view=history_view,
-                history_chart=history_chart(history),
+                    report_periods=report_periods,
+                    selected_period=selected_period,
+                    selected_period_report=selected_period_report,
+                    selected_period_history=selected_period_history,
                 application_links=app.state.store.application_links(partner_id),
                 altegio_legal_entities=ALTEGIO_LEGAL_ENTITIES,
                 report_channels=REPORT_CHANNELS,
@@ -2372,26 +2418,28 @@ def create_app(
                 partner_tabs=PARTNER_TABS,
                 saved=saved == "1",
                 unlinked=request.query_params.get("unlinked") == "1",
-                draft_deleted=deleted == "1" or request.query_params.get("deleted") == "1",
             ),
         )
 
-    @app.post("/admin/partners/{partner_id}/drafts/{draft_id}/delete")
-    def delete_partner_draft(partner_id: int, draft_id: int):
-        """Hard-delete a bot-created draft from the admin profile page.
-
-        Only deletes the draft if it belongs to this partner — guards
-        against accidentally removing someone else's draft by guessing
-        an id. The CSRF middleware already protects this POST.
-        """
-        if not app.state.store.partner(partner_id):
-            raise HTTPException(404, "Partner not found")
-        deleted = app.state.store.delete_draft(draft_id, partner_id)
-        if not deleted:
-            raise HTTPException(404, "Draft not found for this partner")
-        return RedirectResponse(
-            f"/admin/partners/{partner_id}/edit?tab=history&view=drafts&deleted=1",
-            status_code=303,
+    @app.get("/admin/partners/{partner_id}/drafts/{draft_id}/download")
+    def download_partner_draft(partner_id: int, draft_id: int):
+        """Download the source file for an unconfirmed report draft."""
+        partner = app.state.store.partner(partner_id)
+        draft = app.state.store.report_draft_by_id(draft_id)
+        if not partner or not draft or draft["partner_id"] != partner_id:
+            raise HTTPException(404, "Файл не найден")
+        uploads_root = UPLOADS.resolve()
+        candidate = (UPLOADS / str(draft["attachment"])).resolve()
+        try:
+            candidate.relative_to(uploads_root)
+        except ValueError as error:
+            raise HTTPException(404, "Файл недоступен") from error
+        if not candidate.is_file():
+            raise HTTPException(404, "Файл не найден")
+        suffix = candidate.suffix.lower() or ".bin"
+        return FileResponse(
+            candidate,
+            filename=f"revshare-{draft['period']}-draft{suffix}",
         )
 
     @app.get("/admin/partners/{partner_id}/report", response_class=HTMLResponse)
@@ -2736,8 +2784,13 @@ def create_app(
                 schedule_dates=planned,
                 saved=saved == "1",
                 bot_ready=bool(telegram_token()),
-                bot_username=app.state.store.setting("telegram_bot_username")
+                bot_username=(app.state.store.active_telegram_bot() or {}).get("username")
+                or app.state.store.setting("telegram_bot_username")
                 or os.getenv("TELEGRAM_BOT_USERNAME", ""),
+                active_bot=app.state.store.active_telegram_bot(),
+                bot_saved=query.get("bot") == "saved",
+                bot_removed=query.get("bot") == "removed",
+                bot_error=query.get("bot") == "error",
                 digest_linked=bool(app.state.store.setting("kate_telegram_chat_id")),
                 digest_chat=app.state.store.setting("digest_chat_id"),
                 notices_ran=request.query_params.get("notice") == "ran",
@@ -2797,6 +2850,35 @@ def create_app(
     def save_digest_chat(digest_chat: str = Form("")):
         app.state.store.set_digest_chat(digest_chat)
         return RedirectResponse("/admin/settings?saved=1&tab=digest", status_code=303)
+
+    @app.post("/admin/settings/bot")
+    def save_bot_settings(bot_token: str = Form("")):
+        token = bot_token.strip()
+        if not token:
+            return RedirectResponse("/admin/settings?tab=bot&bot=error", status_code=303)
+        try:
+            profile = get_me(token)
+            telegram_id = int(profile["id"])
+        except Exception:
+            # Keep the current token untouched when Telegram rejects the new one.
+            return RedirectResponse("/admin/settings?tab=bot&bot=error", status_code=303)
+        set_secret("TELEGRAM_BOT_TOKEN", token)
+        app.state.store.register_telegram_bot(
+            telegram_id,
+            username=str(profile.get("username") or ""),
+            first_name=str(profile.get("first_name") or ""),
+            token_fingerprint=hashlib.sha256(token.encode()).hexdigest(),
+        )
+        app.state.store.set_setting("telegram_bot_username", str(profile.get("username") or ""))
+        app.state.store.set_setting("telegram_config_revision", str(secrets.token_hex(12)))
+        return RedirectResponse("/admin/settings?tab=bot&bot=saved", status_code=303)
+
+    @app.post("/admin/settings/bot/remove")
+    def remove_bot_settings():
+        set_secret("TELEGRAM_BOT_TOKEN", "")
+        app.state.store.deactivate_telegram_bots()
+        app.state.store.set_setting("telegram_config_revision", str(secrets.token_hex(12)))
+        return RedirectResponse("/admin/settings?tab=bot&bot=removed", status_code=303)
 
     @app.post("/admin/settings/schedule")
     def save_global_schedule(
@@ -2955,6 +3037,107 @@ def create_app(
             request,
             "report.html",
             context(request, report=report),
+        )
+
+    @app.get("/reports/{report_id}/versions/{version_number}/download")
+    def download_report_version(report_id: int, version_number: int):
+        """Download the immutable source file for a report version.
+
+        Manual reports have no uploaded source file, so provide a small CSV
+        snapshot instead. Uploaded files are resolved below ``data/uploads``
+        and are never exposed by their internal path.
+        """
+        report = app.state.store.report(report_id)
+        if not report:
+            raise HTTPException(404, "Отчёт не найден")
+        version = next(
+            (
+                item
+                for item in report["versions"]
+                if item["version"] == version_number
+            ),
+            None,
+        )
+        if not version:
+            raise HTTPException(404, "Версия не найдена")
+
+        attachment = version.get("attachment")
+        if attachment:
+            uploads_root = UPLOADS.resolve()
+            candidate = (UPLOADS / str(attachment)).resolve()
+            try:
+                candidate.relative_to(uploads_root)
+            except ValueError as error:
+                raise HTTPException(404, "Файл версии недоступен") from error
+            if candidate.is_file():
+                suffix = candidate.suffix.lower() or ".bin"
+                return FileResponse(
+                    candidate,
+                    filename=f"revshare-{report['period']}-v{version_number}{suffix}",
+                )
+
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "Report period",
+                "Version",
+                "Turnover",
+                "Currency",
+                "Contract rate",
+                "Reported share",
+                "Clients",
+                "Status",
+                "Risk level",
+                "Risk score",
+                "Submitted at",
+            ]
+        )
+        writer.writerow(
+            [
+                report["period"],
+                version["version"],
+                version["turnover"],
+                version["currency"],
+                version["contract_rate"]
+                if version["contract_rate"] is not None
+                else "",
+                version["reported_share"]
+                if version["reported_share"] is not None
+                else "",
+                version["client_count"],
+                version["status"],
+                version["risk_level"],
+                version["risk_score"],
+                version["submitted_at"],
+            ]
+        )
+        return StreamingResponse(
+            iter([stream.getvalue().encode("utf-8-sig")]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="revshare-{report["period"]}-v{version_number}.csv"'
+                )
+            },
+        )
+
+    @app.get("/admin/files/{file_id}")
+    def download_uploaded_file(file_id: int):
+        uploaded = app.state.store.uploaded_file(file_id)
+        if not uploaded:
+            raise HTTPException(404, "Файл не найден")
+        uploads_root = UPLOADS.resolve()
+        candidate = (UPLOADS / str(uploaded["storage_name"])).resolve()
+        try:
+            candidate.relative_to(uploads_root)
+        except ValueError as error:
+            raise HTTPException(404, "Файл недоступен") from error
+        if not candidate.is_file():
+            raise HTTPException(404, "Файл недоступен")
+        return FileResponse(
+            candidate,
+            filename=str(uploaded.get("original_name") or candidate.name),
         )
 
     @app.post("/reports/{report_id}/approve")

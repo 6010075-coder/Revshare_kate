@@ -124,9 +124,9 @@ HTTP-ручки FastAPI приложения. Основано на `src/revshar
 
 Сохранение изменений карточки.
 
-### `POST /admin/partners/{partner_id}/drafts/{draft_id}/delete`
+### `GET /admin/partners/{partner_id}/drafts/{draft_id}/download`
 
-Удалить черновик.
+Скачать исходный файл неподтверждённого отчёта. Удаление черновика из админки не предусмотрено.
 
 ### `POST /admin/partners/{partner_id}/archive`
 
@@ -255,6 +255,20 @@ HTTP-ручки FastAPI приложения. Основано на `src/revshar
 - `bot_token`
 - `admin_user_ids` (через запятую)
 
+### `POST /admin/settings/bot`
+
+Проверяет новый Telegram-токен через `getMe`, сохраняет его в `data/secrets.env`, фиксирует Telegram ID бота и даёт воркеру команду перезапустить polling. Сам токен в БД и журнал не записывается.
+
+- `bot_token` — новый токен BotFather.
+
+### `POST /admin/settings/bot/remove`
+
+Удаляет токен из управляемого файла секретов, деактивирует текущего бота и останавливает polling.
+
+### `GET /admin/files/{file_id}`
+
+Скачивает исходный файл партнёрского отчёта по внутреннему ID из журнала. Файл берётся из `data/uploads/`, а не из SQLite.
+
 ### `POST /admin/settings/schedule`
 
 Расписание уведомлений (по партнёру или глобально).
@@ -304,6 +318,11 @@ Callback после OAuth. Сохраняет токен в `data/mcp_token.json
 Открывает итоговый отчёт по его ID. Доступ по прямой ссылке (без токена).
 
 - Показывает: оборот, ожидаемую сумму, статус, риск, причины, историю версий.
+
+### `GET /reports/{report_id}/versions/{version_number}/download`
+
+Скачивает исходный файл выбранной версии. Для ручной версии без вложения
+возвращает CSV-снимок сохранённых значений версии.
 
 ## Коды ответов
 

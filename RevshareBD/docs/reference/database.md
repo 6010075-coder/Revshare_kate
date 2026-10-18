@@ -154,6 +154,8 @@ UNIQUE по `(partner_id, period, application_id, location_id)`.
 | `posted_at` | TEXT (миграция) | когда записано в Google Sheets |
 | `application_breakdown` | TEXT JSON (миграция) | разбивка по приложениям |
 | `workflow_status` | TEXT (миграция) | `auto_checked`, `needs_review`, `approved`, `posted`, `failed` |
+| `file_id` | INTEGER (миграция) | ссылка на `uploaded_files` для исходного файла |
+| `source_bot_id` | INTEGER (миграция) | ссылка на Telegram-бота, от имени которого пришёл отчёт |
 
 UNIQUE по `(partner_id, period, application_id)` (после миграции). Без `application_id` — старые отчёты до введения мульти-приложений.
 
@@ -187,6 +189,8 @@ UNIQUE по `(report_id, location_id)`.
 | `extraction_notes` | TEXT JSON | заметки парсера: что не нашли, что пропустили |
 | `application_breakdown` | TEXT JSON | разбивка по приложениям |
 | `created_at` | TEXT | |
+| `file_id` | INTEGER (миграция) | ссылка на исходный файл |
+| `source_bot_id` | INTEGER (миграция) | бот-источник |
 
 Частичный UNIQUE INDEX `(partner_id, period, application_id) WHERE application_id IS NOT NULL` — один черновик на партнёра+период+приложение.
 
@@ -222,6 +226,8 @@ UNIQUE по `(report_id, location_id, kind)`.
 | `attachment` | TEXT | путь к файлу |
 | `submitted_at` | TEXT | |
 | `application_breakdown` | TEXT JSON | |
+| `file_id` | INTEGER (миграция) | ссылка на исходный файл |
+| `source_bot_id` | INTEGER (миграция) | бот-источник |
 
 UNIQUE по `(report_id, version)`.
 
@@ -233,10 +239,13 @@ UNIQUE по `(report_id, version)`.
 |---|---|---|
 | `id` | INTEGER PK | |
 | `report_id` | INTEGER FK | |
+| `report_version_id` | INTEGER FK, NULL | версия отчёта, к которой относится событие; для событий до первой отправки может быть пустым |
 | `workflow_status` | TEXT | новый статус |
 | `note` | TEXT | заметка |
 | `actor` | TEXT | кто изменил (`partner`, `admin:NAME`, `system`) |
 | `created_at` | TEXT | когда |
+| `bot_id` | INTEGER (миграция) | бот, создавший событие; пусто для старых/веб-событий |
+| `file_id` | INTEGER (миграция) | исходный файл, связанный с событием |
 
 ### `bot_interactions`
 
@@ -255,7 +264,39 @@ UNIQUE по `(report_id, version)`.
 | `report_id` | INTEGER | если привязан к отчёту |
 | `draft_id` | INTEGER | если привязан к черновику |
 | `period` | TEXT | если относится к периоду |
+| `bot_id` | INTEGER (миграция) | бот, который обработал событие |
+| `file_id` | INTEGER (миграция) | связанный исходный файл |
 | `created_at` | TEXT | |
+
+### `telegram_bots`
+
+История Telegram-ботов, которые подключались к приложению. Одновременно активен только один бот.
+
+| Поле | Тип | Что хранит |
+|---|---|---|
+| `id` | INTEGER PK | внутренний идентификатор |
+| `telegram_bot_id` | INTEGER UNIQUE | постоянный числовой ID бота в Telegram |
+| `username` | TEXT | username на момент последней проверки |
+| `first_name` | TEXT | имя бота |
+| `token_fingerprint` | TEXT | отпечаток токена, сам токен не хранится в БД |
+| `is_active` | INTEGER | активен ли бот сейчас |
+
+### `uploaded_files`
+
+Карточки файлов, которые физически лежат в `data/uploads/`. Сами файлы в SQLite не помещаются.
+
+| Поле | Тип | Что хранит |
+|---|---|---|
+| `id` | INTEGER PK | идентификатор файла |
+| `storage_name` | TEXT UNIQUE | внутреннее имя файла на диске |
+| `original_name` | TEXT | имя файла от партнёра |
+| `sha256` | TEXT | контрольная сумма |
+| `size_bytes` | INTEGER | размер |
+| `mime_type` | TEXT | тип файла |
+| `source` | TEXT | `partner_web`, `telegram_bot`, `admin` или `unknown` |
+| `partner_id` | INTEGER | партнёр |
+| `bot_id` | INTEGER | бот-источник, если файл пришёл через Telegram |
+| `created_at` | TEXT | время загрузки |
 
 ### `app_settings`
 
@@ -380,6 +421,7 @@ INDEX `(period, status)`.
 | `reports` → `report_claims` | 1:N |
 | `reports` → `report_versions` | 1:N |
 | `reports` → `report_events` | 1:N |
+| `report_versions` → `report_events` | 1:N, необязательная связь |
 | `reports` → `sheet_writes` | 1:N |
 | `report_drafts` → `partner_applications` | N:1 (через `application_id`) |
 
@@ -396,6 +438,7 @@ INDEX `(period, status)`.
 - `report_drafts`: UNIQUE на `token`; частичный UNIQUE на `(partner_id, period, application_id) WHERE application_id IS NOT NULL`
 - `report_claims`: UNIQUE на `(report_id, location_id, kind)`
 - `report_versions`: UNIQUE на `(report_id, version)`
+- `report_events`: INDEX на `report_version_id`
 - `reconciliation_base_rows`: UNIQUE на `(period, application_id, location_id)`, INDEX на `period`
 - `revalidation_tasks`: INDEX на `(period, status)`
 

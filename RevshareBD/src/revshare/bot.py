@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from pathlib import Path
 
 from revshare.secrets import load_secrets, telegram_token
+from revshare.bot_context import set_current_bot_id, set_current_file_id
 from revshare.store import Store
 from revshare.telegram import (
     get_me,
@@ -625,6 +627,15 @@ def handle_partner_document(
     upload_path = ROOT / "data" / "uploads" / attachment_name
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     upload_path.write_bytes(raw)
+    file_id = store.register_uploaded_file(
+        attachment_name,
+        original_name=file_name,
+        mime_type=str(document.get("mime_type") or ""),
+        source="telegram_bot",
+        partner_id=partner["id"],
+        storage_path=upload_path,
+    )
+    set_current_file_id(file_id)
 
     try:
         parsed = parse_partner_report(
@@ -834,6 +845,7 @@ def handle_partner_document(
         location_ids=parsed.location_ids or parsed.all_location_ids or [],
         extraction_notes=notes,
         application_breakdown=parsed.application_breakdown,
+        file_id=file_id,
     )
 
     from revshare.report_template import _format_period
@@ -1264,6 +1276,7 @@ def handle_callback(
                 application_breakdown=draft.get("application_breakdown") or [],
                 report_source="partner_file_bot",
                 application_id=draft.get("application_id"),
+                file_id=draft.get("file_id"),
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("Failed to submit report from bot draft %s", draft_id)
@@ -1322,8 +1335,8 @@ def handle_callback(
     answer_callback_query(token, callback_id)
 
 
-async def poll_forever(store: Store) -> None:
-    token = telegram_token()
+async def poll_forever(store: Store, token_override: str | None = None) -> None:
+    token = token_override if token_override is not None else telegram_token()
     if not token:
         return
     offset_raw = store.setting("telegram_offset")
@@ -1331,6 +1344,13 @@ async def poll_forever(store: Store) -> None:
     try:
         me = await asyncio.to_thread(get_me, token)
         username = me.get("username") or ""
+        bot_id = store.register_telegram_bot(
+            int(me["id"]),
+            username=username,
+            first_name=str(me.get("first_name") or ""),
+            token_fingerprint=hashlib.sha256(token.encode()).hexdigest(),
+        )
+        set_current_bot_id(bot_id)
         if username:
             store.set_setting("telegram_bot_username", username)
     except Exception:
@@ -1348,3 +1368,31 @@ async def poll_forever(store: Store) -> None:
         except Exception:
             log.exception("Telegram polling failed")
             await asyncio.sleep(5)
+
+
+async def telegram_supervisor(store: Store) -> None:
+    """Restart Telegram polling when the admin changes or removes the token."""
+    current_token: str | None = None
+    polling_task: asyncio.Task | None = None
+    try:
+        while True:
+            configured = telegram_token()
+            if configured != current_token:
+                if polling_task is not None:
+                    polling_task.cancel()
+                    await asyncio.gather(polling_task, return_exceptions=True)
+                    polling_task = None
+                current_token = configured
+                if current_token:
+                    log.info("Telegram polling worker started with the active bot")
+                    polling_task = asyncio.create_task(
+                        poll_forever(store, token_override=current_token)
+                    )
+                else:
+                    store.deactivate_telegram_bots()
+                    log.info("Telegram polling worker stopped: token removed")
+            await asyncio.sleep(2)
+    finally:
+        if polling_task is not None:
+            polling_task.cancel()
+            await asyncio.gather(polling_task, return_exceptions=True)

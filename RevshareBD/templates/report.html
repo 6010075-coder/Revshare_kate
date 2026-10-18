@@ -48,8 +48,7 @@
         <button class="button" type="submit">{{ t("approve_report") }}</button>
       </form>
       {% endif %}
-      <a class="button secondary" href="/admin/partners/{{ report.partner_id }}/edit?tab=history&amp;view=reports">{{ t("back_partner_reports") }}</a>
-      <a class="button secondary" href="/?period={{ report.period }}">{{ t("back_dashboard") }}</a>
+      <a class="button secondary" href="/admin/partners/{{ report.partner_id }}/edit?tab=history&amp;period={{ report.period }}">{{ t("back_partner_reports") }}</a>
     </div>
   </section>
 
@@ -212,30 +211,60 @@
 
   <section class="card report-section report-history-section" id="history">
     <h2>{{ t("report_activity_title") }}</h2>
-    <p class="hint">{{ t("report_activity_intro") }}</p>
-    <div class="report-history-grid">
-      <div class="history-block">
-        <h3>{{ t("report_versions_title") }}</h3>
-        <p class="hint">{{ t("report_versions_hint") }}</p>
-        {% for version in report.versions %}
-        <details class="version-item" {% if loop.first %}open{% endif %}>
-          <summary><span>{{ t("report_version_number", number=version.version) }}{% if loop.first %} · {{ t("report_version_latest") }}{% endif %}</span><small>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</small></summary>
-          <dl class="version-values">
-            <div><dt>{{ t("turnover") }}</dt><dd>{{ "{:,.2f}".format(version.turnover).replace(",", " ") }} {{ version.currency }}</dd></div>
-            <div><dt>{{ t("clients") }}</dt><dd>{{ version.client_count }}</dd></div>
-            <div><dt>{{ t("report_version_rate") }}</dt><dd>{% if version.contract_rate is not none %}{{ (version.contract_rate * 100)|round(2) }}%{% else %}—{% endif %}</dd></div>
-            <div><dt>{{ t("partner_due") }}</dt><dd>{{ version.reported_share if version.reported_share is not none else "—" }} {{ version.currency }}</dd></div>
+    <span class="sr-only">{{ t("report_versions_title") }} · {{ t("report_events_title") }}</span>
+    <p class="hint report-history-intro">{{ t("report_activity_intro") }}</p>
+    <div class="report-history">
+      {% for event in report.history %}
+      {% set snapshot = event.version_snapshot %}
+      {% if snapshot %}
+      <details class="history-entry" {% if loop.first %}open{% endif %}>
+        <summary class="history-entry-summary">
+          <span class="history-time"><span>{{ format_local(event.created_at) }}</span><small>{{ t("timezone_label") }}</small></span>
+          <span class="history-node" aria-hidden="true"></span>
+          <span class="history-summary-content">
+            <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
+            <span class="history-meta">{% if event.actor %}{{ event.actor }} · {% endif %}{% if event.bot %}@{{ event.bot.username or event.bot.telegram_bot_id }} · {% endif %}{% if event.version_relation == "created" %}{{ t("report_version_number", number=snapshot.version) }} · {{ t("report_history_created_version") }}{% else %}{{ t("report_history_related_version", version=snapshot.version) }}{% endif %}</span>
+          </span>
+          <span class="history-chevron" aria-hidden="true">⌄</span>
+        </summary>
+        <div class="history-entry-body">
+          <div class="history-snapshot-head">
+            <div>
+              <strong>{{ t("report_history_snapshot", version=snapshot.version) }}</strong>
+              <span>{{ t("report_history_snapshot_at", date=format_local(snapshot.submitted_at)) }}</span>
+            </div>
+            {% if snapshot.version == report.versions[0].version %}<span class="history-latest-badge">{{ t("report_version_latest") }}</span>{% endif %}
+          </div>
+          <dl class="history-values">
+            <div><dt>{{ t("turnover") }}</dt><dd>{{ "{:,.2f}".format(snapshot.turnover).replace(",", " ") }} {{ snapshot.currency }}</dd></div>
+            <div><dt>{{ t("clients") }}</dt><dd>{{ snapshot.client_count }}</dd></div>
+            <div><dt>{{ t("report_version_rate") }}</dt><dd>{% if snapshot.contract_rate is not none %}{{ (snapshot.contract_rate * 100)|round(2) }}%{% else %}—{% endif %}</dd></div>
+            <div><dt>{{ t("partner_due") }}</dt><dd>{{ snapshot.reported_share if snapshot.reported_share is not none else "—" }} {{ snapshot.currency }}</dd></div>
           </dl>
-        </details>
-        {% else %}<p class="hint">{{ t("report_versions_empty") }}</p>{% endfor %}
-      </div>
-      <div class="history-block">
-        <h3>{{ t("report_events_title") }}</h3>
-        <p class="hint">{{ t("report_events_hint") }}</p>
-        {% for event in report.status_log %}
-        <div class="history-event"><span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span><strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}{% if event.actor %} · {{ event.actor }}{% endif %}</strong></div>
-        {% else %}<p class="hint">{{ t("report_events_empty") }}</p>{% endfor %}
-      </div>
+          <div class="history-entry-actions">
+            {% if snapshot.file_id %}<a class="button secondary history-download" href="/admin/files/{{ snapshot.file_id }}">{{ t("report_original_file") }}</a>{% endif %}
+            <a class="button secondary history-download" href="/reports/{{ report.id }}/versions/{{ snapshot.version }}/download">
+              <span aria-hidden="true">↓</span>
+              {{ t("report_history_download", version=snapshot.version) }}
+            </a>
+          </div>
+        </div>
+      </details>
+      {% else %}
+      <article class="history-entry history-entry-plain">
+        <div class="history-entry-summary">
+          <span class="history-time"><span>{{ format_local(event.created_at) }}</span><small>{{ t("timezone_label") }}</small></span>
+          <span class="history-node" aria-hidden="true"></span>
+          <span class="history-summary-content">
+            <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
+            {% if event.actor %}<span class="history-meta">{{ event.actor }}{% if event.bot %} · @{{ event.bot.username or event.bot.telegram_bot_id }}{% endif %}</span>{% endif %}
+          </span>
+        </div>
+      </article>
+      {% endif %}
+      {% else %}
+      <p class="hint">{{ t("report_events_empty") }}</p>
+      {% endfor %}
     </div>
   </section>
 </div>
