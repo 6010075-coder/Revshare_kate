@@ -9,6 +9,17 @@ const syncApplicationOpenLink = (input) => {
   link.tabIndex = valid ? 0 : -1;
 };
 
+const syncApplicationRowLink = (input) => {
+  const link = input.closest(".repeat-row")?.querySelector("[data-application-row-link]");
+  if (!link) return;
+  const value = input.value.trim();
+  const valid = /^https?:\/\//i.test(value);
+  link.hidden = !valid;
+  link.href = valid ? value : "#";
+  link.textContent = value;
+  link.title = value;
+};
+
 const csrfTokenMeta = document.querySelector('meta[name="csrf-token"]');
 const csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : "";
 
@@ -85,6 +96,11 @@ window.fetch = function patchedFetch(input, init = {}) {
   return originalFetch.call(this, input, { ...init, headers });
 };
 
+document.querySelectorAll('[name="application_url"]').forEach((input) => {
+  syncApplicationRowLink(input);
+  input.addEventListener("input", () => syncApplicationRowLink(input));
+});
+
 document.querySelectorAll("[data-application-url]").forEach((input) => {
   syncApplicationOpenLink(input);
   input.addEventListener("input", () => syncApplicationOpenLink(input));
@@ -103,6 +119,10 @@ document.querySelectorAll("[data-add]").forEach((button) => {
       select.selectedIndex = 0;
     });
     list.appendChild(copy);
+    copy.querySelectorAll('[name="application_url"]').forEach((input) => {
+      syncApplicationRowLink(input);
+      input.addEventListener("input", () => syncApplicationRowLink(input));
+    });
     copy.querySelectorAll("[data-application-url]").forEach((input) => {
       syncApplicationOpenLink(input);
       input.addEventListener("input", () => syncApplicationOpenLink(input));
@@ -219,9 +239,15 @@ document.addEventListener("click", (event) => {
   const list = button.closest("[data-repeat]");
   const rows = list.querySelectorAll(".repeat-row");
   if (rows.length === 1) {
-    button.closest(".repeat-row").querySelectorAll("input").forEach((input) => {
+    const row = button.closest(".repeat-row");
+    row.querySelectorAll("input").forEach((input) => {
       input.value = "";
     });
+    row.querySelectorAll("select").forEach((select) => {
+      select.selectedIndex = 0;
+    });
+    const urlInput = row.querySelector('[name="application_url"]');
+    if (urlInput) syncApplicationRowLink(urlInput);
     return;
   }
   button.closest(".repeat-row").remove();
