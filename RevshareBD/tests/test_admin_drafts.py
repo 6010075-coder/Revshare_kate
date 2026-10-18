@@ -30,7 +30,7 @@ def _create_draft(store: Store, partner_id: int, period: str = "2026-08") -> int
     )
 
 
-def test_admin_can_delete_bot_draft(tmp_path):
+def test_admin_cannot_delete_bot_draft(tmp_path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
     store: Store = app.state.store
@@ -44,11 +44,11 @@ def test_admin_can_delete_bot_draft(tmp_path):
         data={"csrf_token": app.state.csrf_token},
         follow_redirects=False,
     )
-    assert response.status_code == 303
-    assert store.drafts_for_partner(partner["id"]) == []
+    assert response.status_code == 404
+    assert [d["id"] for d in store.drafts_for_partner(partner["id"])] == [draft_id]
 
 
-def test_admin_drafts_view_renders_rows_and_delete_button(tmp_path):
+def test_admin_drafts_view_renders_rows_and_download_links(tmp_path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
     store: Store = app.state.store
@@ -60,10 +60,9 @@ def test_admin_drafts_view_renders_rows_and_delete_button(tmp_path):
     assert page.status_code == 200
     assert "August 2026" in page.text
     assert "July 2026" in page.text
-    # Two delete forms (one per draft), each posting to the right endpoint.
-    assert page.text.count("/drafts/") >= 2
-    # Localised confirm prompt is rendered into the form's data-confirm.
-    assert "draft" in page.text and "restore" in page.text.lower()
+    assert page.text.count("/drafts/") >= 1
+    assert "/delete" not in page.text
+    assert "Download file" in page.text
 
 
 def test_delete_draft_from_other_partner_is_404(tmp_path):
@@ -92,7 +91,7 @@ def test_delete_draft_from_other_partner_is_404(tmp_path):
         follow_redirects=False,
     )
     assert response.status_code == 404
-    # Original draft is untouched.
+    # The original draft is untouched and the admin action is not available.
     assert [d["id"] for d in store.drafts_for_partner(owner["id"])] == [draft_id]
 
 
@@ -110,20 +109,20 @@ def test_delete_unknown_draft_is_404(tmp_path):
     assert response.status_code == 404
 
 
-def test_default_history_view_still_shows_reports_not_drafts(tmp_path):
+def test_history_is_grouped_by_period_and_includes_draft(tmp_path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
     _create_draft(store, partner["id"])
 
-    # Without ?view=drafts the page must NOT show the drafts table.
+    # The history is no longer split into report/draft tabs.
     page = client.get(f"/admin/partners/{partner['id']}/edit?tab=history")
     assert page.status_code == 200
-    # Drafts toggle label is NOT visible on the default view.
     assert "Черновики" not in page.text
-    # Reports table heading is still there.
-    assert "Reported months" in page.text or "No reports yet" in page.text
+    assert "August 2026" in page.text
+    assert "File uploaded" in page.text
+    assert "_2026-08_seed.xlsx" in page.text
 
 
 def test_delete_unknown_partner_is_404(tmp_path):
@@ -137,7 +136,7 @@ def test_delete_unknown_partner_is_404(tmp_path):
     )
     assert response.status_code == 404
 
-def test_partner_report_navigation_and_history_separate_drafts(tmp_path):
+def test_partner_report_navigation_and_unified_period_history(tmp_path):
     from revshare.web import create_app
     from fastapi.testclient import TestClient
 
@@ -148,18 +147,23 @@ def test_partner_report_navigation_and_history_separate_drafts(tmp_path):
     partner_id = partner['id']
     report_id, _ = store.submit_report(partner_id=partner_id, period='2026-08', turnover=100, currency='USD', reported_share=20, location_ids=['1'], comment='', attachment=None)
     store.submit_report(partner_id=partner_id, period='2026-08', turnover=200, currency='USD', reported_share=40, location_ids=['1'], comment='', attachment=None)
-    store.save_bot_draft(partner_id=partner_id, period='2026-09', application_id=None, attachment='draft.xlsx', turnover=50, currency='USD', reported_share=10, location_ids=['1'], extraction_notes=[], application_breakdown=[])
+    store.save_bot_draft(partner_id=partner_id, period='2026-08', application_id=None, attachment='draft.xlsx', turnover=50, currency='USD', reported_share=10, location_ids=['1'], extraction_notes=[], application_breakdown=[])
 
     profile = client.get(f'/admin/partners/{partner_id}/edit?tab=history&view=reports')
     assert profile.status_code == 200
-    assert 'Drafts <span class="history-count">1</span>' in profile.text
-    draft_page = client.get(f'/admin/partners/{partner_id}/edit?tab=history&view=drafts')
-    assert 'draft.xlsx' in draft_page.text
+    assert 'Черновики' not in profile.text
+    assert 'August 2026' in profile.text
+    assert 'draft.xlsx' in profile.text
+    assert 'File uploaded' in profile.text
+    assert f'/admin/partners/{partner_id}/drafts/' in profile.text
+    period_page = client.get(f'/admin/partners/{partner_id}/edit?tab=history&period=2026-08')
+    assert 'Version 2' in period_page.text
+    assert 'File uploaded' in period_page.text
     report_page = client.get(f'/reports/{report_id}')
     assert report_page.status_code == 200
     assert 'Submitted versions' in report_page.text
     assert 'Activity' in report_page.text
     assert 'Version 2' in report_page.text and 'Version 1' in report_page.text
     assert '200.00 USD' in report_page.text and '100.00 USD' in report_page.text
-    assert f'/admin/partners/{partner_id}/edit?tab=history&amp;view=reports' in report_page.text
+    assert f'/admin/partners/{partner_id}/edit?tab=history&amp;period=2026-08' in report_page.text
     assert 'draft.xlsx' not in report_page.text

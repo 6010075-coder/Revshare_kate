@@ -944,8 +944,8 @@ def test_partner_profile_lists_previous_reports(tmp_path: Path):
     assert "August 2026" in page.text
     assert "July 2026" in page.text
     assert "270.00 USD" in page.text
-    assert "history-bar-fill share" in page.text
-    assert "history-bar-fill connected" in page.text
+    assert "Reports by month" in page.text
+    assert "Report history" in page.text
 
 
 def test_partner_profile_splits_into_tabs(tmp_path: Path):

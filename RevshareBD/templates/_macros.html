@@ -1,9 +1,16 @@
-{% macro period_select(id, name, selected, options, t, attrs="") %}
-<select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>
-  {% for value in options %}
-  <option value="{{ value }}" {% if value == selected %}selected{% endif %}>{{ t("month_" + value[5:7]) }} {{ value[:4] }}</option>
+{% macro period_select(id, name, selected, options, t, attrs="", year_options=[]) %}
+<select id="{{ id }}-year" name="{{ name }}_year" data-period-part="year" data-period-target="{{ id }}" {{ attrs|safe }}>
+  {% for year in year_options %}
+  <option value="{{ year }}" {% if year|string == selected[:4] %}selected{% endif %}>{{ year }}</option>
   {% endfor %}
 </select>
+<select id="{{ id }}-month" name="{{ name }}_month" data-period-part="month" data-period-target="{{ id }}" {{ attrs|safe }}>
+  {% for month in range(1, 13) %}
+  {% set value = "%02d"|format(month) %}
+  <option value="{{ value }}" {% if value == selected[5:7] %}selected{% endif %}>{{ t("month_" + value) }}</option>
+  {% endfor %}
+</select>
+<input id="{{ id }}" type="hidden" name="{{ name }}" value="{{ selected }}">
 {% endmacro %}
 
 {% macro csrf_field(token) %}

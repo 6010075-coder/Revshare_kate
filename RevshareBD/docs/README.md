@@ -1,6 +1,6 @@
 # Документация Integration Hub Revshare
 
-Здесь — техническая документация проекта для разработчиков и админов.
+Здесь — документация проекта для продуктовой команды, разработчиков и админов.
 
 ## С чего начать
 
@@ -9,8 +9,10 @@
 | Впервые видите проект | [architecture.md](./architecture.md) |
 | Поднимаете локально | [docs/development/dev-setup.md](./development/dev-setup.md) |
 | Разбираетесь с БД | [docs/reference/database.md](./reference/database.md) |
+| Проверяете пользовательские сценарии перед выпуском | [Пользовательские истории и приёмочная проверка](./acceptance/user-stories.md) |
 | Делаете HTTP-ручку | [docs/reference/api.md](./reference/api.md) |
 | Чините прод | [docs/operations/runbook.md](./operations/runbook.md) |
+| Готовите релиз или проверяете флоу | [docs/testing/README.md](./testing/README.md) |
 
 ## Структура
 
@@ -19,6 +21,13 @@ docs/
 ├── README.md                   # этот файл — навигация
 ├── architecture.md             # как устроен проект
 │
+├── acceptance/                 # приёмочная проверка: истории, сценарии, протоколы
+│   ├── user-stories.md         # P-01..P-17, A-01..A-13
+│   ├── scenarios-partner.md    # пошаговые сценарии для партнёра
+│   ├── scenarios-admin.md      # пошаговые сценарии для админа
+│   ├── run-template.md         # шаблон протокола прогона
+│   └── runs/                   # протоколы конкретных прогонов
+│
 ├── development/
 │   └── dev-setup.md            # как поднять локально
 │
@@ -26,9 +35,15 @@ docs/
 │   ├── database.md             # схема БД, миграции
 │   └── api.md                  # HTTP-ручки FastAPI
 │
-└── operations/
-    └── runbook.md              # что делать когда сломалось
+├── operations/
+│   └── runbook.md              # что делать когда сломалось
+│
+└── testing/
+    ├── README.md               # навигация: автотесты + ручные сценарии
+    ├── automated/README.md     # карта pytest-файлов
+    └── manual/                 # ручные приёмочные сценарии по флоу
 ```
+
 
 ## Другие документы в проекте
 

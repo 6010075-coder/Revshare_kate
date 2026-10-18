@@ -24,7 +24,7 @@
     </div>
     <div class="field">
       <label for="period">{{ t("month") }}</label>
-      {{ period_select("period", "period", period, period_options, t, 'data-auto-submit') }}
+      {{ period_select("period", "period", period, period_options, t, 'data-auto-submit', period_year_options) }}
       <a class="button secondary" href="/admin/reconciliation-base/{{ period }}">{{ t("reconciliation_base_button") }}</a>
     </div>
   </div>

@@ -145,6 +145,18 @@ document.querySelectorAll("[data-own-schedule]").forEach((checkbox) => {
   sync();
 });
 
+document.querySelectorAll("[data-period-part]").forEach((control) => {
+  control.addEventListener("change", () => {
+    const targetId = control.dataset.periodTarget;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    const form = control.closest("form");
+    const year = form?.querySelector(`[data-period-target="${targetId}"][data-period-part="year"]`)?.value;
+    const month = form?.querySelector(`[data-period-target="${targetId}"][data-period-part="month"]`)?.value;
+    if (year && month) target.value = `${year}-${month}`;
+  });
+});
+
 document.querySelectorAll("[data-auto-submit]").forEach((control) => {
   control.addEventListener("change", () => {
     control.closest("form")?.requestSubmit();

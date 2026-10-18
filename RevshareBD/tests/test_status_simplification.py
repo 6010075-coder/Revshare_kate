@@ -63,6 +63,21 @@ def test_confirmed_after_admin_approve(tmp_path):
     assert _dashboard_item(store, partner)["display_status"] == "confirmed"
 
 
+def test_partner_period_card_uses_confirmed_status(tmp_path):
+    """The month list must use the same confirmed status as the dashboard."""
+    store = create_app(tmp_path / "test.db").state.store
+    partner = store.partner_by_token("demo-partner")["id"]
+    report_id = _submit_via_bot(store, partner)
+    store.approve_report(report_id)
+
+    period = next(
+        item
+        for item in store.partner_report_periods(partner)
+        if item["period"] == "2026-08"
+    )
+    assert period["report"]["display_status"] == "confirmed"
+
+
 def test_recheck_does_not_drop_confirmation(tmp_path):
     """An automatic recheck must not silently undo an admin confirmation."""
     store = create_app(tmp_path / "test.db").state.store

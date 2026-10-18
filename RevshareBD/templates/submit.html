@@ -29,7 +29,7 @@
   <form method="post" action="/submit/{{ partner.token }}/parse" enctype="multipart/form-data" class="card form-card">
     <div class="field">
       <label for="period">{{ t("report_month") }}</label>
-      {{ period_select("period", "period", period, period_options, t) }}
+      {{ period_select("period", "period", period, period_options, t, year_options=period_year_options) }}
     </div>
     <div class="field">
       <label for="attachment">{{ t("registry_file") }}</label>
