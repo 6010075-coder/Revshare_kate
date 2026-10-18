@@ -141,17 +141,35 @@ def handle_update(store: Store, token: str, update: dict) -> None:
             "Чат привязан. Сюда будут приходить ежемесячные сводки.",
         )
         return
+    sender_username = str(sender.get("username") or "").strip()
     if payload:
-        partner = store.bind_telegram_chat(payload, str(chat_id))
-        if partner:
-            send_message(
+        # Modern flow: payload is a one-time ``telegram_invites.token``.
+        # The classic ``partner.token`` short-link still works as a
+        # fallback when the new invite table hasn't been wired up yet
+        # (legacy /submit partners) — it follows the historical
+        # ``bind_telegram_chat`` path.
+        invite = store.find_telegram_invite_by_token(payload)
+        if invite is not None:
+            _consume_invite_flow(
+                store,
                 token,
+                invite,
                 chat_id,
-                partner_chat_linked_message(partner),
-                reply_markup=request_template_keyboard(),
+                sender_username,
+                update_id=update_id,
             )
             return
-    sender_username = str(sender.get("username") or "").strip()
+        legacy_partner = store.partner_by_token(payload)
+        if legacy_partner is not None:
+            partner = store.bind_telegram_chat(payload, str(chat_id))
+            if partner:
+                send_message(
+                    token,
+                    chat_id,
+                    partner_chat_linked_message(partner),
+                    reply_markup=request_template_keyboard(),
+                )
+                return
     if sender_username:
         partner = store.bind_telegram_chat_by_username(
             sender_username, str(chat_id)
@@ -169,6 +187,209 @@ def handle_update(store: Store, token: str, update: dict) -> None:
         chat_id,
         "Open the personal bot link from your Integration Hub manager to connect this chat.",
     )
+
+
+def _consume_invite_flow(
+    store: Store,
+    token: str,
+    invite: dict,
+    chat_id: int,
+    sender_username: str,
+    *,
+    update_id: int | None,
+) -> None:
+    """Apply the modern Telegram-invite flow when a partner opens ``/start <token>``.
+
+    All branches log a ``bot_interactions`` row so an admin can audit why a
+    specific chat did (or did not) become linked. The full invite token is
+    never written to the journal — only its ``token_prefix``.
+    """
+    from revshare.telegram_handle import normalize_telegram_handle
+
+    invite_id = invite["id"]
+    prefix = invite["token_prefix"]
+    invite_row, error = store.consume_telegram_invite(
+        invite["token"],
+        chat_id=str(chat_id),
+        username=sender_username,
+    )
+    if error == "not_found":
+        # Already revoked or never existed. Treat as user-facing error.
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_not_found",
+            payload={"actor": "partner"},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Эта ссылка больше не активна. Попросите менеджера прислать новую.",
+        )
+        return
+    if error == "used":
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_already_used",
+            payload={
+                "actor": "partner",
+                "first_used_chat_id": invite_row.get("used_chat_id") if invite_row else "",
+            },
+        )
+        send_message(
+            token,
+            chat_id,
+            "Эта ссылка уже использована. Если это не вы — напишите менеджеру.",
+        )
+        return
+    if error == "revoked":
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_revoked",
+            payload={"actor": "partner", "reason": invite_row.get("revoked_reason") if invite_row else ""},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Ссылка отозвана. Попросите менеджера прислать новую.",
+        )
+        return
+    if error == "expired":
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_expired",
+            payload={"actor": "partner"},
+        )
+        send_message(
+            token,
+            chat_id,
+            "Срок ссылки истёк. Попросите менеджера прислать новую.",
+        )
+        return
+    if error == "username_mismatch":
+        expected = (invite_row.get("expected_handle") if invite_row else "") or ""
+        actual = normalize_telegram_handle(sender_username)
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_username_mismatch",
+            payload={
+                "actor": "partner",
+                "expected": expected,
+                "actual": actual,
+            },
+        )
+        send_message(
+            token,
+            chat_id,
+            "Ссылка предназначена для другого Telegram-контакта. Свяжитесь с менеджером.",
+        )
+        return
+    if error == "no_username":
+        _log_invite_event(
+            store,
+            invite_id=invite_id,
+            prefix=prefix,
+            chat_id=chat_id,
+            update_id=update_id,
+            kind="telegram_invite_no_username",
+            payload={"actor": "partner", "expected_handle": invite_row.get("expected_handle") if invite_row else ""},
+        )
+        expected = (invite_row.get("expected_handle") if invite_row else "") or ""
+        send_message(
+            token,
+            chat_id,
+            (
+                "В вашем Telegram не задан @username — без него нельзя "
+                f"подтвердить, что вы {expected or 'тот контакт, которому предназначалась ссылка'}. "
+                "Откройте Настройки → Edit Profile и задайте username, затем "
+                "нажмите /start ещё раз."
+            ),
+        )
+        return
+    # Success — bind chat to partner (and any sibling partners that share
+    # the same Telegram handle, matching the original policy).
+    partner_id = invite_row["partner_id"]
+    expected = invite_row["expected_handle"]
+    store.bind_telegram_chat_by_username(expected, str(chat_id))
+    # Make sure the invited partner itself has the chat bound even if the
+    # username differs slightly in the DB vs the invite (admin may have
+    # typed it differently the second time). bind_telegram_chat_by_username
+    # matches case-insensitively after stripping ``@``, so this is safe.
+    partner = store.partner(partner_id)
+    if partner and not partner.get("telegram_chat_id"):
+        store.bind_telegram_chat(partner["token"], str(chat_id))
+    refreshed = partner or store.partner(partner_id)
+    _log_invite_event(
+        store,
+        invite_id=invite_id,
+        prefix=prefix,
+        chat_id=chat_id,
+        update_id=update_id,
+        kind="telegram_invite_used",
+        payload={
+            "actor": "partner",
+            "expected_handle": expected,
+            "actual_handle": normalize_telegram_handle(sender_username),
+        },
+    )
+    if refreshed is None:
+        return
+    send_message(
+        token,
+        chat_id,
+        partner_chat_linked_message(refreshed),
+        reply_markup=request_template_keyboard(),
+    )
+
+
+def _log_invite_event(
+    store: Store,
+    *,
+    invite_id: int,
+    prefix: str,
+    chat_id: int,
+    update_id: int | None,
+    kind: str,
+    payload: dict[str, object],
+) -> None:
+    """Write a bot_interactions row for an invite flow event.
+
+    The full token never appears here — only the prefix recorded at invite
+    creation time. ``partner_id`` is intentionally left None for invite
+    branches that haven't been resolved yet (not_found / no_username).
+    """
+    safe_payload = {"token_prefix": prefix, **payload}
+    try:
+        store.log_bot_interaction(
+            partner_id=None,
+            chat_id=str(chat_id),
+            update_id=update_id,
+            kind=kind,
+            direction="inbound",
+            payload=safe_payload,
+            response={"invite_id": invite_id},
+        )
+    except Exception:
+        log.exception("Failed to log %s interaction", kind)
 
 
 # ----- Document handler (file from partner) -----

@@ -647,6 +647,22 @@ def _invite_telegram_template(store, language: str) -> str:
     return translator(language)("invite_telegram_default")
 
 
+def _session_actor(request: Request) -> str:
+    """Best-effort actor identifier for audit log entries.
+
+    The admin UI doesn't carry a real auth model today, so we record the
+    ``user`` value from the signed cookie session when available and fall
+    back to an empty string. This keeps audit rows readable when an
+    enterprise SSO is wired up later without breaking the contract.
+    """
+    try:
+        session = getattr(request, "session", None) or {}
+    except Exception:
+        session = {}
+    value = session.get("user") if isinstance(session, dict) else ""
+    return str(value) if value else ""
+
+
 def create_app(
     db_path: Path | None = None, *, admin_auth: bool | None = None
 ) -> FastAPI:
@@ -2199,6 +2215,19 @@ def create_app(
             if history_view == "drafts"
             else []
         )
+        bot_username = (
+            app.state.store.setting("telegram_bot_username")
+            or os.getenv("TELEGRAM_BOT_USERNAME", "")
+        )
+        # Show the freshly-created invite token after a contact change so the
+        # admin can copy it. We never read it back from the DB on subsequent
+        # visits — only the token_prefix is stored, which is enough to show
+        # "an active invite exists" without leaking the secret.
+        new_invite_token = request.query_params.get("tg_invite_token", "")
+        active_invite = app.state.store.active_telegram_invite(partner_id)
+        tg_changed = request.query_params.get("tg_changed") == "1"
+        tg_unlinked = request.query_params.get("tg_unlinked") == "1"
+        tg_inherited = request.query_params.get("tg_inherited") == "1"
         return TEMPLATES.TemplateResponse(
             request,
             "partner_edit.html",
@@ -2224,8 +2253,13 @@ def create_app(
                         link=f"/submit/{payload['token']}",
                     )
                 },
-                bot_username=app.state.store.setting("telegram_bot_username")
-                or os.getenv("TELEGRAM_BOT_USERNAME", ""),
+                bot_username=bot_username,
+                bot_configured=bool(telegram_token()),
+                active_invite=active_invite,
+                new_invite_token=new_invite_token,
+                tg_changed=tg_changed,
+                tg_unlinked=tg_unlinked,
+                tg_inherited=tg_inherited,
                 public_base_url=public_base_url(),
                 notice_result=request.query_params.get("notice"),
                 notice_reason=request.query_params.get("reason"),
@@ -2390,7 +2424,10 @@ def create_app(
             altegio_legal_entity=altegio_legal_entity,
             contact_name=contact_name.strip(),
             email=email.strip(),
-            telegram=telegram.strip(),
+            # Telegram handle is normalized and managed inside the contact-
+            # change flow so the chat_id unlink and invite revoke happen
+            # atomically with the handle update.
+            telegram="",
             report_channel=report_channel,
             rate=rate_value,
             currency=currency.upper(),
@@ -2400,10 +2437,35 @@ def create_app(
             report_automation_status=report_automation_status,
         )
         app.state.store.replace_application_links(partner_id, links)
-        app.state.store.propagate_telegram_chat_by_handle(partner_id)
+        bot_configured = bool(telegram_token())
+        create_invite = (
+            report_channel == "telegram"
+            and bool(telegram.strip())
+            and bot_configured
+        )
+        contact_result = app.state.store.apply_telegram_contact_change(
+            partner_id,
+            telegram.strip(),
+            actor=_session_actor(request),
+            bot_configured=bot_configured,
+            create_invite=create_invite,
+        )
         params = {"saved": "1"}
         if tab in PARTNER_TABS:
             params["tab"] = tab
+        if contact_result.get("handle_changed"):
+            params["tg_changed"] = "1"
+            if contact_result.get("unlinked_chat_id"):
+                params["tg_unlinked"] = "1"
+            invite = contact_result.get("invite")
+            if invite is not None:
+                params["tg_invite"] = "1"
+                # Pass the token only this once via the redirect so the
+                # admin can copy it. Subsequent reloads won't see the
+                # token (it's not stored in a retrievable form).
+                params["tg_invite_token"] = invite["token"]
+            elif contact_result.get("inherited_chat_id"):
+                params["tg_inherited"] = "1"
         return RedirectResponse(
             f"/admin/partners/{partner_id}/edit?{urlencode(params)}",
             status_code=303,
@@ -2736,6 +2798,41 @@ def create_app(
             raise HTTPException(404, "Partner not found or already unlinked")
         return RedirectResponse(
             f"/admin/partners/{partner_id}/edit?unlinked=1#contact",
+            status_code=303,
+        )
+
+    @app.post("/admin/partners/{partner_id}/telegram/invite/rotate")
+    def rotate_telegram_invite(partner_id: int, request: Request):
+        """Revoke the current invite and mint a new one.
+
+        Used by the partner card UI when the admin wants to invalidate a
+        link that has been shared but not yet used (e.g. sent to the wrong
+        person). The Telegram handle itself is not touched — use the
+        partner-edit flow for that.
+        """
+        partner = app.state.store.partner(partner_id)
+        if not partner or not partner["active"]:
+            raise HTTPException(404, "Partner not found")
+        if not telegram_token():
+            raise HTTPException(409, "Telegram bot is not configured")
+        if not (partner["telegram"] or "").strip():
+            raise HTTPException(409, "Set a Telegram handle first")
+        if not partner.get("telegram_chat_id"):
+            new_invite = app.state.store.create_telegram_invite(
+                partner_id,
+                expected_handle=partner["telegram"],
+                actor=_session_actor(request),
+            )
+            params = {
+                "tg_rotated": "1",
+                "tg_invite_token": new_invite["token"],
+            }
+        else:
+            # Chat already linked — no new invite needed. Surface a flash
+            # message so the admin knows nothing was rotated.
+            params = {"tg_already_linked": "1"}
+        return RedirectResponse(
+            f"/admin/partners/{partner_id}/edit?{urlencode(params)}#contact",
             status_code=303,
         )
 

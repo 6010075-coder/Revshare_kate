@@ -21,6 +21,19 @@
 
 {% if saved %}<div class="notice neutral">{{ t("changes_saved") }}</div>{% endif %}
 {% if unlinked %}<div class="notice neutral">Telegram unlinked for this partner.</div>{% endif %}
+{% if tg_changed %}
+  {% if tg_unlinked %}
+    {% if tg_inherited %}
+    <div class="notice neutral">{{ t("telegram_contact_inherited") }}</div>
+    {% elif active_invite and partner.report_channel == "telegram" %}
+    <div class="notice neutral">{{ t("telegram_contact_changed_with_link") }}</div>
+    {% else %}
+    <div class="notice neutral">{{ t("telegram_contact_changed") }}</div>
+    {% endif %}
+  {% endif %}
+{% endif %}
+{% if tg_rotated %}<div class="notice neutral">{{ t("telegram_invite_rotated") }}</div>{% endif %}
+{% if tg_already_linked %}<div class="notice neutral">{{ t("telegram_invite_no_active") }}</div>{% endif %}
 
 <div class="partner-edit">
   <nav class="tabs" data-tabs>
@@ -134,26 +147,56 @@
      form, severing the <input name="telegram"> field from any submit button
      and breaking the Save changes POST. #}
   <div class="telegram-box">
-    {% if partner.report_channel == "telegram" and bot_username %}
+    {% if partner.report_channel == "telegram" %}
       {% if partner.telegram_chat_id %}
-      <p class="hint">{{ t("telegram_linked") }}</p>
+      <p class="hint">{{ t("telegram_username_display", username=partner.telegram) if partner.telegram else t("telegram_linked") }}</p>
       <form method="post" action="/admin/partners/{{ partner.id }}/telegram/unlink" class="inline-form">
         {{ csrf_field(csrf_token) }}
         <button type="submit" class="button secondary" data-confirm="Unlink Telegram chat from this partner? Other partners sharing this chat stay linked.">Unlink Telegram</button>
       </form>
       {% else %}
-      <p class="hint">{{ t("telegram_not_linked") }}</p>
-      <div class="invite-link-row" data-invite-link-row>
-          <input id="invite-link-{{ partner.id }}" class="invite-link-input" type="text" readonly
-                 value="https://t.me/{{ bot_username }}?start={{ partner.token }}"
-                 data-invite-link-input>
-          <button type="button" class="button secondary"
-                  data-copy-invite-link
-                  data-target="invite-link-{{ partner.id }}"
-                  data-copied-label="{{ t('invite_link_copied') }}">
-            {{ t("copy_invite_link") }}
-          </button>
-        </div>
+        {% set invite_token = new_invite_token %}
+        {% if not invite_token and active_invite %}
+          {# We never re-emit the unhashed token from the DB. The admin
+             already saw it once on the redirect after creation; after a
+             page reload we only show "an invite is active" without
+             re-exposing the secret. #}
+        {% endif %}
+        {% if not bot_configured %}
+          <p class="hint">{{ t("telegram_bot_missing") }}</p>
+        {% elif not partner.telegram %}
+          <p class="hint">{{ t("telegram_invite_handle_missing") }}</p>
+        {% elif invite_token %}
+          <p class="hint">{{ t("telegram_not_linked") }}</p>
+          <div class="invite-link-row" data-invite-link-row>
+            <input id="invite-link-{{ partner.id }}" class="invite-link-input" type="text" readonly
+                   value="https://t.me/{{ bot_username }}?start={{ invite_token }}"
+                   data-invite-link-input>
+            <button type="button" class="button secondary"
+                    data-copy-invite-link
+                    data-target="invite-link-{{ partner.id }}"
+                    data-copied-label="{{ t('invite_link_copied') }}">
+              {{ t("copy_invite_link") }}
+            </button>
+          </div>
+          <form method="post" action="/admin/partners/{{ partner.id }}/telegram/invite/rotate" class="inline-form">
+            {{ csrf_field(csrf_token) }}
+            <button type="submit" class="button secondary">Create new link</button>
+          </form>
+        {% elif active_invite %}
+          <p class="hint">{{ t("telegram_not_linked") }}</p>
+          <p class="hint">An invite link was already generated for this partner. Generate a new one only if the previous link was shared with the wrong person.</p>
+          <form method="post" action="/admin/partners/{{ partner.id }}/telegram/invite/rotate" class="inline-form">
+            {{ csrf_field(csrf_token) }}
+            <button type="submit" class="button secondary">Create new link</button>
+          </form>
+        {% else %}
+          <p class="hint">{{ t("telegram_not_linked") }}</p>
+          <form method="post" action="/admin/partners/{{ partner.id }}/telegram/invite/rotate" class="inline-form">
+            {{ csrf_field(csrf_token) }}
+            <button type="submit" class="button secondary">Create invite link</button>
+          </form>
+        {% endif %}
       {% endif %}
     {% elif partner.report_channel == "email" %}
       <p class="hint">{{ t("email_ready") if mail_ready else t("email_not_ready") }}</p>

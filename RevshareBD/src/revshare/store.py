@@ -54,6 +54,44 @@ CLAIM_REASON_KEYS = {
 NOTICE_CLAIM_TIMEOUT = timedelta(minutes=15)
 
 
+# Telegram invite tokens ----------------------------------------------------
+#
+# Separate one-time token bound to a partner. Distinct from ``partner.token``
+# which is used for the public ``/submit/<token>`` form link — that token must
+# remain stable across Telegram-contact changes so the existing report-form
+# link keeps working.
+TELEGRAM_INVITE_STATUS_ACTIVE = "active"
+TELEGRAM_INVITE_STATUS_USED = "used"
+TELEGRAM_INVITE_STATUS_REVOKED = "revoked"
+TELEGRAM_INVITE_STATUSES = frozenset(
+    {
+        TELEGRAM_INVITE_STATUS_ACTIVE,
+        TELEGRAM_INVITE_STATUS_USED,
+        TELEGRAM_INVITE_STATUS_REVOKED,
+    }
+)
+TELEGRAM_INVITE_DEFAULT_TTL = timedelta(days=7)
+TELEGRAM_INVITE_PREFIX_LEN = 8
+
+# Audit events recorded in ``bot_interactions`` whenever a Telegram-contact
+# change happens. The full token is never written; only ``token_prefix`` is.
+TELEGRAM_CONTACT_EVENTS = frozenset(
+    {
+        "telegram_contact_changed",
+        "telegram_chat_unlinked",
+        "telegram_invite_created",
+        "telegram_invite_revoked",
+        "telegram_invite_used",
+        "telegram_invite_username_mismatch",
+        "telegram_invite_expired",
+        "telegram_invite_not_found",
+        "telegram_invite_already_used",
+        "telegram_invite_no_username",
+        "telegram_invite_handle_inherited",
+    }
+)
+
+
 def discrepancy_items(
     reported_ids: list[str],
     connected_ids: set[str],
@@ -900,6 +938,27 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_revalidation_tasks_period_status
                     ON revalidation_tasks(period, status);
+                """
+            )
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_invites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    token_prefix TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    expected_handle TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT,
+                    used_chat_id TEXT,
+                    used_username TEXT,
+                    revoked_at TEXT,
+                    revoked_reason TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_telegram_invites_partner_status
+                    ON telegram_invites(partner_id, status);
                 """
             )
             usage_columns = {
@@ -3213,6 +3272,528 @@ class Store:
                 "SELECT * FROM partners WHERE id = ?", (partner_id,)
             ).fetchone()
         return dict(refreshed) if refreshed else None
+
+    # ----- Telegram invite tokens -----------------------------------------
+
+    def _now(self) -> datetime:
+        return datetime.now(UTC).replace(microsecond=0)
+
+    def _iso(self, value: datetime) -> str:
+        return value.replace(microsecond=0).isoformat()
+
+    def create_telegram_invite(
+        self,
+        partner_id: int,
+        *,
+        expected_handle: str,
+        ttl: timedelta | None = None,
+        actor: str = "",
+    ) -> dict:
+        """Create a fresh one-time invite for ``partner_id``.
+
+        Always revokes any previously-active invite for the same partner first
+        so there is at most one outstanding link per partner. The caller is
+        expected to have already cleared ``telegram_chat_id``; this method
+        does NOT touch it.
+
+        Returns the newly inserted row as a dict with the unhashed ``token``
+        (the only opportunity for the caller to display it). The token is
+        never re-emitted by any later method.
+        """
+        from revshare.telegram_handle import normalize_telegram_handle
+
+        ttl_seconds = (ttl or TELEGRAM_INVITE_DEFAULT_TTL).total_seconds()
+        if ttl_seconds <= 0:
+            ttl_seconds = TELEGRAM_INVITE_DEFAULT_TTL.total_seconds()
+        token = secrets.token_urlsafe(32)
+        prefix = token[:TELEGRAM_INVITE_PREFIX_LEN]
+        now = self._now()
+        expires = now + timedelta(seconds=ttl_seconds)
+        normalized_expected = normalize_telegram_handle(expected_handle)
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE telegram_invites
+                SET status = ?, revoked_at = ?, revoked_reason = ?
+                WHERE partner_id = ? AND status = ?
+                """,
+                (
+                    TELEGRAM_INVITE_STATUS_REVOKED,
+                    self._iso(now),
+                    "superseded",
+                    partner_id,
+                    TELEGRAM_INVITE_STATUS_ACTIVE,
+                ),
+            )
+            cursor = db.execute(
+                """
+                INSERT INTO telegram_invites (
+                    partner_id, token, token_prefix, status, expected_handle,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    partner_id,
+                    token,
+                    prefix,
+                    TELEGRAM_INVITE_STATUS_ACTIVE,
+                    normalized_expected,
+                    self._iso(now),
+                    self._iso(expires),
+                ),
+            )
+            invite_id = int(cursor.lastrowid)
+        return {
+            "id": invite_id,
+            "partner_id": partner_id,
+            "token": token,
+            "token_prefix": prefix,
+            "status": TELEGRAM_INVITE_STATUS_ACTIVE,
+            "expected_handle": normalized_expected,
+            "created_at": self._iso(now),
+            "expires_at": self._iso(expires),
+            "used_at": None,
+            "used_chat_id": None,
+            "used_username": None,
+            "revoked_at": None,
+            "revoked_reason": "",
+            "actor": actor,
+        }
+
+    def get_telegram_invite(self, invite_id: int) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM telegram_invites WHERE id = ?", (invite_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def find_telegram_invite_by_token(self, token: str) -> dict | None:
+        if not token:
+            return None
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM telegram_invites WHERE token = ?", (token,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def active_telegram_invite(self, partner_id: int) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT * FROM telegram_invites
+                WHERE partner_id = ? AND status = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (partner_id, TELEGRAM_INVITE_STATUS_ACTIVE),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def revoke_active_telegram_invites(
+        self,
+        partner_id: int,
+        *,
+        reason: str = "superseded",
+        actor: str = "",
+    ) -> int:
+        """Revoke every active invite for the partner. Returns row count."""
+        now = self._now()
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE telegram_invites
+                SET status = ?, revoked_at = ?, revoked_reason = ?
+                WHERE partner_id = ? AND status = ?
+                """,
+                (
+                    TELEGRAM_INVITE_STATUS_REVOKED,
+                    now.isoformat(),
+                    reason,
+                    partner_id,
+                    TELEGRAM_INVITE_STATUS_ACTIVE,
+                ),
+            )
+            revoked = cursor.rowcount
+        if revoked and actor:
+            self.log_bot_interaction(
+                partner_id=partner_id,
+                chat_id=None,
+                update_id=None,
+                kind="telegram_invite_revoked",
+                direction="internal",
+                payload={
+                    "reason": reason,
+                    "count": revoked,
+                    "actor": actor,
+                },
+                response={},
+            )
+        return revoked
+
+    def consume_telegram_invite(
+        self,
+        token: str,
+        *,
+        chat_id: str,
+        username: str,
+    ) -> tuple[dict | None, str | None]:
+        """Atomically transition an ``active`` invite into ``used``.
+
+        Returns ``(invite_row, error_code)``. ``error_code`` is one of:
+            ``"not_found"`` — token does not exist
+            ``"expired"`` — found but past ``expires_at``
+            ``"used"`` — already used before
+            ``"revoked"`` — was revoked
+            ``"username_mismatch"`` — usernames do not match
+            ``"no_username"`` — Telegram did not provide a username
+
+        On success returns ``(row, None)`` and the caller is responsible for
+        committing the chat_id binding (the bot handler does this right
+        after).
+        """
+        from revshare.telegram_handle import normalize_telegram_handle
+
+        handle = normalize_telegram_handle(username)
+        now = self._now()
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM telegram_invites WHERE token = ?", (token,)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            invite = dict(row)
+            if invite["status"] == TELEGRAM_INVITE_STATUS_USED:
+                return invite, "used"
+            if invite["status"] == TELEGRAM_INVITE_STATUS_REVOKED:
+                return invite, "revoked"
+            try:
+                expires_at = datetime.fromisoformat(invite["expires_at"])
+            except (TypeError, ValueError):
+                expires_at = now
+            if expires_at <= now:
+                # Mark as revoked so it can never be retried even if the clock
+                # is restored. We keep the original ``used`` field untouched.
+                db.execute(
+                    """
+                    UPDATE telegram_invites
+                    SET status = ?, revoked_at = ?, revoked_reason = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        TELEGRAM_INVITE_STATUS_REVOKED,
+                        now.isoformat(),
+                        "expired",
+                        invite["id"],
+                        TELEGRAM_INVITE_STATUS_ACTIVE,
+                    ),
+                )
+                return invite, "expired"
+            if not handle:
+                # Don't consume the row — the partner can retry from a profile
+                # that does have a public username.
+                return invite, "no_username"
+            expected = (invite["expected_handle"] or "").strip()
+            if expected and handle != expected:
+                return invite, "username_mismatch"
+            db.execute(
+                """
+                UPDATE telegram_invites
+                SET status = ?, used_at = ?, used_chat_id = ?, used_username = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    TELEGRAM_INVITE_STATUS_USED,
+                    now.isoformat(),
+                    str(chat_id),
+                    handle,
+                    invite["id"],
+                    TELEGRAM_INVITE_STATUS_ACTIVE,
+                ),
+            )
+            refreshed = db.execute(
+                "SELECT * FROM telegram_invites WHERE id = ?", (invite["id"],)
+            ).fetchone()
+        return dict(refreshed) if refreshed else invite, None
+
+    def apply_telegram_contact_change(
+        self,
+        partner_id: int,
+        new_handle: str,
+        *,
+        actor: str = "",
+        bot_configured: bool,
+        create_invite: bool,
+    ) -> dict:
+        """Atomically unlink + revoke invites + (optionally) create a fresh one.
+
+        Returns a dict with keys:
+            ``partner`` — refreshed partner row after the change
+            ``handle_changed`` — bool
+            ``unlinked_chat_id`` — the previous ``telegram_chat_id`` (or "")
+            ``invite`` — newly created invite dict (or None)
+            ``inherited_chat_id`` — chat_id discovered via
+                ``propagate_telegram_chat_by_handle`` when no invite was needed
+
+        Must run inside a single transaction so the admin can never end up
+        with the new handle saved but the old chat still bound. The whole
+        flow:
+
+          1. Read old ``telegram`` and ``telegram_chat_id``.
+          2. If normalized handles are equal: return early, no changes.
+          3. Otherwise UPDATE partner with new handle, clear chat_id.
+          4. Revoke all active invites for this partner.
+          5. If ``create_invite`` is True (channel=telegram, handle set, bot
+             configured): create a fresh one.
+          6. If no invite is created and the handle is non-empty: try to
+             inherit an existing chat_id from another partner with the same
+             normalized handle.
+          7. Log audit events.
+
+        The bot handler can rely on this: after the call, ``telegram_chat_id``
+        is either empty, inherited, or bound to the new handle (but never to
+        the previous handle).
+        """
+        from revshare.telegram_handle import normalize_telegram_handle
+
+        now = self._now()
+        new_normalized = normalize_telegram_handle(new_handle)
+        with self.connect() as db:
+            partner = db.execute(
+                """
+                SELECT id, telegram, telegram_chat_id, active
+                FROM partners WHERE id = ?
+                """,
+                (partner_id,),
+            ).fetchone()
+            if not partner:
+                return {
+                    "partner": None,
+                    "handle_changed": False,
+                    "unlinked_chat_id": "",
+                    "invite": None,
+                    "inherited_chat_id": "",
+                }
+            old_normalized = normalize_telegram_handle(partner["telegram"])
+            old_chat_id = partner["telegram_chat_id"] or ""
+            if old_normalized == new_normalized:
+                refreshed = self._refresh_partner_row(db, partner_id)
+                return {
+                    "partner": refreshed,
+                    "handle_changed": False,
+                    "unlinked_chat_id": "",
+                    "invite": None,
+                    "inherited_chat_id": "",
+                }
+            # 1. Update telegram, clear chat_id atomically.
+            db.execute(
+                """
+                UPDATE partners
+                SET telegram = ?, telegram_chat_id = ''
+                WHERE id = ?
+                """,
+                (new_normalized, partner_id),
+            )
+            # 2. Revoke all active invites.
+            db.execute(
+                """
+                UPDATE telegram_invites
+                SET status = ?, revoked_at = ?, revoked_reason = ?
+                WHERE partner_id = ? AND status = ?
+                """,
+                (
+                    TELEGRAM_INVITE_STATUS_REVOKED,
+                    self._iso(now),
+                    "handle_changed",
+                    partner_id,
+                    TELEGRAM_INVITE_STATUS_ACTIVE,
+                ),
+            )
+            invited = None
+            inherited_chat_id = ""
+            if create_invite and new_normalized and bot_configured:
+                token = secrets.token_urlsafe(32)
+                prefix = token[:TELEGRAM_INVITE_PREFIX_LEN]
+                expires = now + TELEGRAM_INVITE_DEFAULT_TTL
+                cursor = db.execute(
+                    """
+                    INSERT INTO telegram_invites (
+                        partner_id, token, token_prefix, status,
+                        expected_handle, created_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        partner_id,
+                        token,
+                        prefix,
+                        TELEGRAM_INVITE_STATUS_ACTIVE,
+                        new_normalized,
+                        self._iso(now),
+                        self._iso(expires),
+                    ),
+                )
+                invited = {
+                    "id": int(cursor.lastrowid),
+                    "partner_id": partner_id,
+                    "token": token,
+                    "token_prefix": prefix,
+                    "status": TELEGRAM_INVITE_STATUS_ACTIVE,
+                    "expected_handle": new_normalized,
+                    "created_at": self._iso(now),
+                    "expires_at": self._iso(expires),
+                    "used_at": None,
+                    "used_chat_id": None,
+                    "used_username": None,
+                    "revoked_at": None,
+                    "revoked_reason": "",
+                    "actor": actor,
+                }
+            elif new_normalized and not old_chat_id:
+                # The new handle might already be linked on a different
+                # partner. Re-use that chat_id when present so we don't
+                # send the user through /start again unnecessarily.
+                existing = db.execute(
+                    """
+                    SELECT telegram_chat_id FROM partners
+                    WHERE id != ?
+                      AND telegram_chat_id IS NOT NULL
+                      AND telegram_chat_id <> ''
+                      AND lower(replace(telegram, '@', '')) = lower(?)
+                    ORDER BY id LIMIT 1
+                    """,
+                    (partner_id, new_normalized),
+                ).fetchone()
+                if existing:
+                    inherited_chat_id = existing["telegram_chat_id"] or ""
+                    if inherited_chat_id:
+                        db.execute(
+                            """
+                            UPDATE partners
+                            SET telegram_chat_id = ?
+                            WHERE id = ?
+                            """,
+                            (inherited_chat_id, partner_id),
+                        )
+            refreshed = self._refresh_partner_row(db, partner_id)
+            # Audit trail — written inside the same transaction so the
+            # admin can never observe a state where the chat is
+            # already unlinked but the log entry is missing.
+            if old_chat_id:
+                db.execute(
+                    """
+                    INSERT INTO bot_interactions (
+                        partner_id, chat_id, update_id, kind, direction,
+                        payload, response, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        partner_id,
+                        old_chat_id,
+                        None,
+                        "telegram_chat_unlinked",
+                        "internal",
+                        json.dumps(
+                            {
+                                "actor": actor,
+                                "old_handle": old_normalized,
+                                "new_handle": new_normalized,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps({}, ensure_ascii=False),
+                        self._iso(now),
+                    ),
+                )
+            db.execute(
+                """
+                INSERT INTO bot_interactions (
+                    partner_id, chat_id, update_id, kind, direction,
+                    payload, response, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    partner_id,
+                    None,
+                    None,
+                    "telegram_contact_changed",
+                    "internal",
+                    json.dumps(
+                        {
+                            "actor": actor,
+                            "old_handle": old_normalized,
+                            "new_handle": new_normalized,
+                            "unlinked_chat_id": old_chat_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps({}, ensure_ascii=False),
+                    self._iso(now),
+                ),
+            )
+            if invited is not None:
+                db.execute(
+                    """
+                    INSERT INTO bot_interactions (
+                        partner_id, chat_id, update_id, kind, direction,
+                        payload, response, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        partner_id,
+                        None,
+                        None,
+                        "telegram_invite_created",
+                        "internal",
+                        json.dumps(
+                            {
+                                "actor": actor,
+                                "token_prefix": invited["token_prefix"],
+                                "expires_at": invited["expires_at"],
+                                "expected_handle": new_normalized,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps({}, ensure_ascii=False),
+                        self._iso(now),
+                    ),
+                )
+            if inherited_chat_id:
+                db.execute(
+                    """
+                    INSERT INTO bot_interactions (
+                        partner_id, chat_id, update_id, kind, direction,
+                        payload, response, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        partner_id,
+                        inherited_chat_id,
+                        None,
+                        "telegram_invite_handle_inherited",
+                        "internal",
+                        json.dumps(
+                            {
+                                "actor": actor,
+                                "handle": new_normalized,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps({}, ensure_ascii=False),
+                        self._iso(now),
+                    ),
+                )
+            # Connection commits on __exit__.
+            return {
+                "partner": refreshed,
+                "handle_changed": True,
+                "unlinked_chat_id": old_chat_id,
+                "invite": invited,
+                "inherited_chat_id": inherited_chat_id,
+            }
+
+    def _refresh_partner_row(self, db, partner_id: int) -> dict | None:
+        row = db.execute(
+            "SELECT * FROM partners WHERE id = ?", (partner_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
     def notice_already_sent(self, partner_id: int, period: str, notice_key: str) -> bool:
         with self.connect() as db:
