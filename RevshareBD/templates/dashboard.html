@@ -101,6 +101,7 @@
           ("clients", t("clients")),
           ("active", "Altegio"),
           ("risk", t("risk")),
+          ("status_updated", t("status_updated")),
         ] %}
         {% for key, label in columns %}
         <th class="sortable {{ 'sorted' if sort_links[key].active else '' }}">
@@ -161,6 +162,11 @@
             <strong class="risk {{ item.risk_level }}">{{ item.risk_score }}/100</strong>
           {% else %}—{% endif %}
         </td>
+        <td>
+          {% if item.report_id and item.status_updated_at %}
+            <small>{{ item.status_updated_at[:10] }}</small>
+          {% else %}—{% endif %}
+        </td>
         <td class="actions">
           {% if item.report_id %}
             <a href="/reports/{{ item.report_id }}">{{ t("open") }}</a>
@@ -199,6 +205,7 @@
           <span>{{ active_total }} {{ t("active") }}</span>
           <small>{{ connected_total }} {{ t("connected") }}</small>
         </td>
+        <td>—</td>
         <td>—</td>
         <td></td>
       </tr>
