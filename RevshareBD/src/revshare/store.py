@@ -1416,15 +1416,18 @@ class Store:
         altegio_legal_entity: str,
         contact_name: str,
         email: str,
-        telegram: str,
         report_channel: str,
         rate: float | None,
         currency: str,
+        telegram: str | None = None,
         notice_settings: dict | None = None,
         category: str = "",
         internal_comment: str = "",
         report_automation_status: str | None = None,
     ) -> None:
+        # Sentinel: ``_SKIP`` means "don't touch telegram" — the contact
+        # change flow handles the field separately so the chat_id unlink and
+        # invite revoke can run atomically with the new handle being saved.
         assignments = """
                     name = ?,
                     legal_name = ?,
@@ -1432,7 +1435,6 @@ class Store:
                     altegio_legal_entity = ?,
                     contact_name = ?,
                     email = ?,
-                    telegram = ?,
                     report_channel = ?,
                     rate = ?,
                     currency = ?,
@@ -1446,13 +1448,35 @@ class Store:
             altegio_legal_entity,
             contact_name,
             email,
-            telegram,
             report_channel,
             rate,
             currency,
             category,
             internal_comment,
         ]
+        if telegram is not None:
+            assignments = (
+                "name = ?,\n                    legal_name = ?,\n                    "
+                "legal_country = ?,\n                    altegio_legal_entity = ?,\n                    "
+                "contact_name = ?,\n                    email = ?,\n                    "
+                "telegram = ?,\n                    report_channel = ?,\n                    "
+                "rate = ?,\n                    currency = ?,\n                    "
+                "category = ?,\n                    internal_comment = ?\n        "
+            )
+            values = [
+                name,
+                legal_name,
+                legal_country,
+                altegio_legal_entity,
+                contact_name,
+                email,
+                telegram,
+                report_channel,
+                rate,
+                currency,
+                category,
+                internal_comment,
+            ]
         if report_automation_status is not None:
             assignments += ",\n                    report_automation_status = ?"
             values.append(report_automation_status)
@@ -3486,6 +3510,11 @@ class Store:
                         TELEGRAM_INVITE_STATUS_ACTIVE,
                     ),
                 )
+                refreshed_expired = db.execute(
+                    "SELECT * FROM telegram_invites WHERE id = ?", (invite["id"],)
+                ).fetchone()
+                if refreshed_expired:
+                    invite = dict(refreshed_expired)
                 return invite, "expired"
             if not handle:
                 # Don't consume the row — the partner can retry from a profile
@@ -3508,6 +3537,14 @@ class Store:
                     invite["id"],
                     TELEGRAM_INVITE_STATUS_ACTIVE,
                 ),
+            )
+            # Bind the chat_id to the partner atomically with marking the
+            # invite used. Doing both here means a bot handler can't observe
+            # a state where the invite is marked used but the chat is
+            # still unbound.
+            db.execute(
+                "UPDATE partners SET telegram_chat_id = ? WHERE id = ?",
+                (str(chat_id), invite["partner_id"]),
             )
             refreshed = db.execute(
                 "SELECT * FROM telegram_invites WHERE id = ?", (invite["id"],)

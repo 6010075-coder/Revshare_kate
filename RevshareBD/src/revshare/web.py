@@ -2355,6 +2355,7 @@ def create_app(
 
     @app.post("/admin/partners/{partner_id}/edit")
     def edit_partner(
+        request: Request,
         partner_id: int,
         name: str = Form(""),
         legal_name: str = Form(""),
@@ -2424,10 +2425,10 @@ def create_app(
             altegio_legal_entity=altegio_legal_entity,
             contact_name=contact_name.strip(),
             email=email.strip(),
-            # Telegram handle is normalized and managed inside the contact-
-            # change flow so the chat_id unlink and invite revoke happen
-            # atomically with the handle update.
-            telegram="",
+            # Telegram handle is intentionally NOT passed: the contact-change
+            # flow below reads the previous value, compares it to the new one,
+            # and writes the new handle only when it actually changed (with
+            # the chat_id unlink and invite revoke in the same transaction).
             report_channel=report_channel,
             rate=rate_value,
             currency=currency.upper(),

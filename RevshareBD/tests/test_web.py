@@ -1813,7 +1813,12 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
         follow_redirects=False,
     )
     assert updated.status_code == 303
-    assert updated.headers["location"] == f"/admin/partners/{partner['id']}/edit?saved=1"
+    # Telegram handle changed from "" to "@team" — the edit flow flags the
+    # contact change so the admin sees the new invite link on the next page.
+    location = updated.headers["location"]
+    assert location.startswith(f"/admin/partners/{partner['id']}/edit?")
+    assert "saved=1" in location
+    assert "tg_changed=1" in location
     saved = app.state.store.partner(partner["id"])
     assert saved["name"] == "Ukrainian App Updated"
     assert saved["legal_country"] == "Poland"

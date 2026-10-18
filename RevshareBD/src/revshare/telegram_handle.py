@@ -35,8 +35,10 @@ def normalize_telegram_handle(value: str | None) -> str:
     """Return the canonical Telegram username for ``value`` or an empty string.
 
     Canonical form: stripped of surrounding whitespace, with the leading ``@``
-    removed, in lowercase, with any ``t.me/<user>`` URL prefix stripped. Returns
-    ``""`` for falsy input so callers can compare with ``==``.
+    removed, in lowercase, with any ``t.me/<user>`` URL prefix stripped.
+    Trailing path slashes are also dropped so ``t.me/foo/`` matches
+    ``t.me/foo``. Returns ``""`` for falsy input so callers can compare with
+    ``==``.
 
     Examples::
 
@@ -62,7 +64,7 @@ def normalize_telegram_handle(value: str | None) -> str:
             text = text[len(prefix):]
             lowered = text.lower()
             break
-    text = text.lstrip("@").strip()
+    text = text.lstrip("@").strip().rstrip("/")
     return text.lower()
 
 
