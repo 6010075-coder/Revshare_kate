@@ -8,6 +8,9 @@ SECRETS_PATH = ROOT / "data" / "secrets.env"
 
 
 def load_secrets(path: Path | None = None) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        # Tests must not leak a developer's local secrets into the suite.
+        return
     file_path = path or SECRETS_PATH
     if not file_path.exists():
         return

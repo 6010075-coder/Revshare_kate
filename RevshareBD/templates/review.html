@@ -2,108 +2,96 @@
 {% block title %}{{ t("review_report") }} · {{ partner.name }}{% endblock %}
 {% block content %}
 <section class="review-page review-page-simple">
+  {% set required_count = required_discrepancies|length %}
+  {% set optional_count = optional_discrepancies|length %}
+  {% set reconciliation_ok = snapshot_ready and not required_discrepancies %}
+  {# Step 3: when the admin has not yet uploaded the reconciliation base
+     for this period, render the "waiting for base" branch instead of the
+     usual discrepancies + Confirm button. The partner must wait for the
+     admin to load the base; the report is still saved with the
+     ``pending_base`` status. #}
+  {% set base_missing = not base_exists %}
+
   <header class="review-header">
     <div>
       <p class="eyebrow">{{ t("review_page_eyebrow") }}</p>
       <h1>{{ t("review_report") }}</h1>
-      <p>{{ t("review_intro") }}</p>
+      <p>{{ t("review_intro_with_discrepancies") if required_count else t("review_intro") }}</p>
     </div>
-    <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_another") }}</a>
   </header>
 
   {% if form_error %}<div class="notice error">{{ t(form_error) }}</div>{% endif %}
 
-  {% set required_count = required_discrepancies|length %}
-  {% set optional_count = optional_discrepancies|length %}
-  {% set snapshot_ready = connected_count > 0 or active_count > 0 %}
-  {% set reconciliation_ok = snapshot_ready and not required_discrepancies %}
-
+  {% if base_missing %}
+  <section class="card review-pending-base">
+    <h2>{{ t("pending_base_title") }}</h2>
+    <p class="notice neutral">{{ t("pending_base_message", period=draft.period) }}</p>
+    <p class="hint">{{ t("pending_base_hint") }}</p>
+    <div class="review-file-actions">
+      <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_another") }}</a>
+    </div>
+  </section>
+  {% else %}
   <form method="post" action="/submit/{{ partner.token }}/confirm/{{ draft.token }}" class="review-form-shell">
-    <section class="card review-simple-result">
-      <p class="eyebrow">{{ t("review_result_label") }}</p>
-      <h2 class="review-result-title {{ 'is-good' if reconciliation_ok else 'is-warning' }}">
-        {% if reconciliation_ok %}{{ t("review_result_match") }}{% else %}{{ t("review_result_attention", count=required_count) }}{% endif %}
-      </h2>
+    <section class="card review-simple-data">
+      <h2>{{ t("review_report_data_title") }}</h2>
+      <div class="review-simple-data-grid review-metrics-grid">
+        <div><span>{{ t("reported_locations_label") }}</span><strong>{{ report_count }}</strong></div>
+        <div><span>{{ t("turnover") }}</span><strong>{{ format_amount(draft.turnover, draft.currency) }}</strong></div>
+        <div><span>{{ t("reported_share_label") }}</span><strong>{{ format_amount(draft.reported_share, draft.currency) if draft.reported_share is not none else "—" }}</strong></div>
+      </div>
+    </section>
+
+    <section class="card review-simple-result {{ 'is-ready' if reconciliation_ok else 'is-attention' }}">
+      <h2 class="review-result-title">{{ t("review_our_check_title") }}</h2>
       {% if not snapshot_ready %}
-      <p>{{ t("snapshot_missing") }}</p>
-      {% elif reconciliation_ok %}
-      <p>{{ t("review_result_ready_hint") }}</p>
+      <p class="notice warning">{{ t("snapshot_missing") }}</p>
       {% else %}
-      <p>{{ t("review_result_attention_hint") }}</p>
-      {% endif %}
+      {% if reconciliation_ok %}<p class="review-check-status is-good">{{ t("review_result_match") }}</p>{% endif %}
+      <p>{{ t("review_check_active_hint") }}</p>
       <div class="review-simple-line">
         <strong>{{ report_count }}</strong> {{ t("review_metric_file") }}
         <span>·</span>
         <strong>{{ registry_count }}</strong> {{ t("review_metric_altegio") }}
-        {% if draft.reported_share is not none %}
-        <span>·</span>
-        <strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong> {{ t("share_due_short") }}
-        {% endif %}
       </div>
-      {% if payment_summary %}
-      <p class="review-payment-line"><strong>{{ t("payment_summary_title") }}:</strong>
-        {% for item in payment_summary if item.count %}{{ t("payment_summary_" ~ item.key) }} — {{ item.count }}{% if not loop.last %}; {% endif %}{% endfor %}
-      </p>
       {% endif %}
-    </section>
 
-    <section class="card review-simple-data">
-      <h2>{{ t("review_report_data_title") }}</h2>
-      <div class="review-simple-data-grid">
-        <div><span>{{ t("reported_locations_label") }}</span><strong>{{ report_count }}</strong></div>
-        <div><span>{{ t("turnover") }}</span><strong>{{ format_amount(draft.turnover, draft.currency) }}</strong></div>
+      {% if required_count %}
+      <div class="review-issues-heading">
+        <h3>{{ t("review_issues_title") }} · {{ required_count }}</h3>
+        <p>{{ t("review_issues_hint") }}</p>
       </div>
-      <details class="ids-details">
-        <summary>{{ t("show_all_report_rows", count=report_count) }}</summary>
-        <div class="simple-id-list">
-          {% for row in report_rows %}
-          <div><span>{{ row.application or t("application_not_identified") }}</span><strong>{{ row.location_id }}</strong><em>{{ t("payment_status_" ~ row.status) if row.status else t("payment_status_missing") }}</em></div>
-          {% endfor %}
-        </div>
-      </details>
-    </section>
-
-    {% if required_count %}
-    <section class="card review-simple-issues">
-      <h2>{{ t("issue_block_title", count=required_count) }}</h2>
-      <p>{{ t("issue_block_hint") }}</p>
-      <div class="problem-list">
+      <div class="problem-list review-inline-issues">
         {% for item in required_discrepancies %}
+        {% set location = location_details.get(item.location_id, {}) %}
+        {% set issue_label = t("issue_missing_in_report") if item.kind in ["active_not_reported", "connected_not_reported"] else (t("issue_status_missing") if item.kind == "payment_status_missing" else (t("issue_payment_not_found") if item.kind == "payment_not_found" else item.kind)) %}
         <div class="problem-row">
-          <div>
-            {% if item.application %}<small>{{ item.application }}</small>{% endif %}
-            <strong>{{ item.location_id }}</strong>
-            {% if location_details and location_details.get(item.location_id, {}).get('location_name') %}<small>{{ location_details[item.location_id].location_name }}</small>{% endif %}
+          <div class="problem-row-main">
+            <strong>{{ location.get("location_name") or (t("location_id_label") ~ ": " ~ item.location_id) }}</strong>
+            <small>{{ t("location_id_label") }}: {{ item.location_id }}</small>
           </div>
-          {% if item.kind in ["connected_not_reported", "active_not_reported"] %}<span class="problem-label">{{ t("issue_missing_in_report") }}</span>
-          {% elif item.kind == "payment_not_found" %}<span class="problem-label">{{ t("issue_payment_not_found") }}</span>
-          {% else %}<span class="problem-label">{{ t("issue_status_missing") }}</span>{% endif %}
+          <span class="problem-label">{{ issue_label }}</span>
         </div>
         {% endfor %}
       </div>
       <div class="review-file-actions">
-        <a class="button" href="/submit/{{ partner.token }}/review/{{ draft.token }}/full-report.csv">{{ t("download_full_report") }}</a>
-        <small class="hint">{{ t("recommended_template_hint") }}</small>
+        <a class="button" href="/submit/{{ partner.token }}/template.xlsx?period={{ draft.period }}">{{ t("download_review_template") }}</a>
+        <a class="button secondary" href="/submit/{{ partner.token }}?period={{ draft.period }}">{{ t("upload_another") }}</a>
       </div>
-    </section>
-    {% elif optional_count %}
-    <details class="card review-simple-extra">
-      <summary>{{ t("show_optional_issues", count=optional_count) }}</summary>
-      <p>{{ t("issue_connected_inactive") }}</p>
-    </details>
-    {% endif %}
-
-    <section class="review-comment">
-      <label for="comment">{{ t("comment") }} <span>{{ t("optional") }}</span></label>
-      <textarea id="comment" name="comment" rows="3" placeholder="{{ t('comment_placeholder') }}">{{ comment|default("") }}</textarea>
+      {% elif optional_count %}
+      <details class="review-simple-extra">
+        <summary>{{ t("show_optional_issues", count=optional_count) }}</summary>
+        <p>{{ t("issue_connected_inactive") }}</p>
+      </details>
+      {% endif %}
     </section>
 
     <div class="review-submit-bar">
       {% if draft.reported_share is not none %}<span class="review-submit-total"><small>{{ t("share_due_short") }}</small><strong>{{ format_amount(draft.reported_share, draft.currency) }}</strong></span>{% endif %}
-      {% if required_count %}<span class="review-submit-hint">{{ t("confirm_submit_with_discrepancies_hint") }}</span>
-      <button class="button" type="submit">{{ t("confirm_submit_with_discrepancies") }}</button>
-      {% else %}<button class="button" type="submit">{{ t("confirm_submit") }}</button>{% endif %}
+      {% if required_count %}<span class="review-submit-hint">{{ t("confirm_submit_with_discrepancies_hint") }}</span>{% endif %}
+      <button class="button" type="submit">{{ t("confirm_submit_with_discrepancies") if required_count else t("confirm_submit") }}</button>
     </div>
   </form>
+  {% endif %}
 </section>
 {% endblock %}

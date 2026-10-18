@@ -9,3 +9,51 @@
 {% macro csrf_field(token) %}
 <input type="hidden" name="csrf_token" value="{{ token }}">
 {% endmacro %}
+
+{% macro report_history_table(rows, partner, t, show_status=True) %}
+<div class="table-card">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t("month") }}</th>
+        <th>{{ t("turnover") }}</th>
+        <th>Revshare</th>
+        <th>{{ t("clients") }}</th>
+        <th>Altegio</th>
+        {% if show_status %}<th>{{ t("status") }}</th>{% endif %}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ t("month_" + row.period[5:7]) }} {{ row.period[:4] }}</td>
+        <td>
+          {{ "{:,.2f}".format(row.turnover).replace(",", " ") }} {{ row.currency }}
+          {% if row.currency != "USD" and row.turnover_usd is not none %}
+          <small>≈ {{ "{:,.2f}".format(row.turnover_usd).replace(",", " ") }} USD</small>
+          {% endif %}
+        </td>
+        <td>
+          {% if row.expected_share is not none %}
+          {{ "{:,.2f}".format(row.expected_share).replace(",", " ") }} {{ row.currency }}
+          {% else %}
+          <small>{{ t("rate_missing") }}</small>
+          {% endif %}
+        </td>
+        <td>{{ row.client_count }}</td>
+        <td><small>{{ row.active_count }} {{ t("active") }} · {{ row.connected_count }} {{ t("connected") }}</small></td>
+        {% if show_status %}
+        <td>
+          <span class="status {{ 'green' if row.display_status == 'checked' else 'yellow' if row.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+            {{ t("report_status_" + row.display_status) }}
+          </span>
+        </td>
+        {% endif %}
+        <td><a class="text-link" href="/reports/{{ row.report_id }}">{{ t("open") }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}

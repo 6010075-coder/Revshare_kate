@@ -4,11 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ t("app_name") }}{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20261018-1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20261017-5">
+  <script defer src="{{ url_for('static', path='/app.js') }}?v=20261017-5"></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="{{ request.url.path if partner_page else '/' }}">
+    <a class="brand" href="{% if partner_page %}{% if admin_logged_in %}/admin/partners{% else %}/submit/{{ partner.token }}{% endif %}{% else %}/{% endif %}">
       <span class="brand-mark">A</span>
       <span>{{ t("app_name") }}</span>
     </a>
@@ -31,6 +33,5 @@
   <main class="page">
     {% block content %}{% endblock %}
   </main>
-  <script src="{{ url_for('static', path='/app.js') }}"></script>
 </body>
 </html>

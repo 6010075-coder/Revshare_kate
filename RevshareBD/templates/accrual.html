@@ -14,6 +14,7 @@
     <div class="inline">
       {{ period_select("period", "period", period, period_options, t) }}
       <button type="submit" class="button secondary">{{ t("show") }}</button>
+      <a class="button secondary" href="/admin/reconciliation-base/{{ period }}">{{ t("reconciliation_base_button") }}</a>
     </div>
   </form>
 </section>

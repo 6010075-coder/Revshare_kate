@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import logging
 import re
 from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from revshare.fx import valid_period
+from revshare.mcp_client import MCPClient, MCPError, access_token
 from revshare.mysql import mysql_connection, mysql_configured
 from revshare.store import Store
 
 APP_ID_RE = re.compile(r"/app/(\d+)/?$")
 MARKETPLACE_APP_ID_RE = re.compile(r"/(?:e|m)/mp_(\d+)(?:_[^/]+)?/?$")
+
+log = logging.getLogger("revshare.altegio_sync")
 
 
 @dataclass
@@ -101,12 +105,15 @@ def _fetch_usage_rows(
 
     cursor.execute(
         f"""
-        SELECT salon_id, MAX(changed_at) AS last_activity_at
-        FROM marketplace_application_log
-        WHERE marketplace_application_id IN ({placeholders})
-          AND changed_at >= %s
-          AND changed_at < %s
-        GROUP BY salon_id
+        SELECT l.salon_id, MAX(l.changed_at) AS last_activity_at
+        FROM marketplace_application_log l
+        JOIN salons s ON s.id = l.salon_id
+        WHERE l.marketplace_application_id IN ({placeholders})
+          AND l.changed_at >= %s
+          AND l.changed_at < %s
+          AND s.deleted = 0
+          AND s.trash = 0
+        GROUP BY l.salon_id
         """,
         (*params, start, end_exclusive),
     )
@@ -171,109 +178,182 @@ def _fetch_usage_rows(
     return locations
 
 
-def sync_period(store: Store, period: str) -> SyncResult:
-    checked = valid_period(period)
-    if not checked:
-        raise ValueError("invalid_period")
-    if not mysql_configured():
-        raise RuntimeError("altegio_mysql_missing")
+def _sql_literal(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value).replace("\\", "\\\\").replace("'", "''")
+    return f"'{text}'"
 
+
+class _MCPQueryCursor:
+    """Small DB-API-shaped adapter for the existing Altegio query code."""
+
+    def __init__(self, client: MCPClient):
+        self.client = client
+        self.rows: list[dict[str, object]] = []
+
+    def execute(self, statement: str, params: tuple[object, ...] = ()) -> None:
+        parts = statement.split("%s")
+        if len(parts) != len(params) + 1:
+            raise MCPError("MCP query parameters do not match the SQL")
+        sql = parts[0]
+        for value, tail in zip(params, parts[1:]):
+            sql += _sql_literal(value) + tail
+        self.rows = []
+        offset = 0
+        while True:
+            page_sql = f"{sql.rstrip().rstrip(';')} LIMIT 1000 OFFSET {offset}"
+            page = self.client.query_rows(page_sql, database="salon", limit=1000)
+            self.rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += len(page)
+            if offset > 100_000:
+                raise MCPError("MCP query returned more than 100000 rows")
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return self.rows
+
+
+def _fetch_usage_rows_mcp(
+    client: MCPClient, application_ids: list[int], period: str
+) -> dict[str, dict[str, object]]:
+    return _fetch_usage_rows(_MCPQueryCursor(client), application_ids, period)
+
+
+def _sync_with_fetcher(
+    store: Store,
+    checked: str,
+    fetch_usage: Callable[[list[int], str], dict[str, dict[str, object]]],
+) -> SyncResult:
     result = SyncResult(period=checked)
     partners = list(store.partners())
     result.partners_total = len(partners)
 
-    with mysql_connection() as connection:
-        cursor = connection.cursor()
-        for partner in partners:
-            app_ids = application_ids_for_partner(store, partner["id"])
-            if not app_ids:
-                result.partners_skipped.append(
-                    {"partner": partner["name"], "reason": "no_application_url"}
+    for partner in partners:
+        app_ids = application_ids_for_partner(store, partner["id"])
+        if not app_ids:
+            result.partners_skipped.append(
+                {"partner": partner["name"], "reason": "no_application_url"}
+            )
+            continue
+        locations: dict[str, dict[str, object]] = {}
+        try:
+            for application_id in app_ids:
+                application_locations = fetch_usage([application_id], checked)
+                connected_for_app = sorted(
+                    location_id
+                    for location_id, facts in application_locations.items()
+                    if facts.get("connected_at")
                 )
-                continue
-            locations: dict[str, dict[str, object]] = {}
-            try:
-                for application_id in app_ids:
-                    application_locations = _fetch_usage_rows(
-                        cursor, [application_id], checked
-                    )
-                    connected_for_app = sorted(
-                        location_id
-                        for location_id, facts in application_locations.items()
-                        if facts.get("connected_at")
-                    )
-                    active_for_app = sorted(
-                        active_rows_ids(application_locations, active_only=True)
-                    )
-                    payment_for_app = sorted(
-                        location_id
-                        for location_id, facts in application_locations.items()
-                        if facts.get("has_api_amounts")
-                    )
-                    store.replace_application_usage(
-                        partner["id"],
-                        checked,
-                        application_id,
-                        connected_for_app,
-                        active_for_app,
-                        payment_for_app,
-                        location_details=application_locations,
-                    )
-                    for location_id, facts in application_locations.items():
-                        current = locations.setdefault(
-                            location_id,
-                            {
-                                "name": "",
-                                "connected_at": "",
-                                "last_api_at": "",
-                                "has_api_amounts": 0,
-                            },
-                        )
-                        for key in ("name", "connected_at", "last_api_at"):
-                            if facts.get(key) and not current.get(key):
-                                current[key] = facts[key]
-                        current["has_api_amounts"] = int(
-                            bool(current.get("has_api_amounts"))
-                            or bool(facts.get("has_api_amounts"))
-                        )
-            except Exception as error:
-                result.errors.append(f"{partner['name']}: {error}")
-                continue
-
-            connected_ids = sorted(
-                location_id
-                for location_id, facts in locations.items()
-                if facts.get("connected_at")
-            )
-            active_ids = sorted(active_rows_ids(locations, active_only=True))
-            payment_ids = sorted(
-                location_id
-                for location_id, facts in locations.items()
-                if facts.get("has_api_amounts")
-            )
-
-            store.replace_usage(
-                partner["id"],
-                checked,
-                connected_ids,
-                active_ids,
-                payment_ids,
-                source="altegio_bi",
-                location_details=locations,
-            )
-            result.partners_synced += 1
-            result.partners.append(
-                PartnerSyncResult(
-                    partner_id=partner["id"],
-                    partner_name=partner["name"],
-                    application_ids=app_ids,
-                    connected=len(connected_ids),
-                    active=len(active_ids),
-                    payment=len(payment_ids),
+                active_for_app = sorted(
+                    active_rows_ids(application_locations, active_only=True)
                 )
+                payment_for_app = sorted(
+                    location_id
+                    for location_id, facts in application_locations.items()
+                    if facts.get("has_api_amounts")
+                )
+                store.replace_application_usage(
+                    partner["id"],
+                    checked,
+                    application_id,
+                    connected_for_app,
+                    active_for_app,
+                    payment_for_app,
+                    location_details=application_locations,
+                )
+                for location_id, facts in application_locations.items():
+                    current = locations.setdefault(
+                        location_id,
+                        {
+                            "name": "",
+                            "connected_at": "",
+                            "last_api_at": "",
+                            "has_api_amounts": 0,
+                        },
+                    )
+                    for key in ("name", "connected_at", "last_api_at"):
+                        if facts.get(key) and not current.get(key):
+                            current[key] = facts[key]
+                    current["has_api_amounts"] = int(
+                        bool(current.get("has_api_amounts"))
+                        or bool(facts.get("has_api_amounts"))
+                    )
+        except Exception as error:
+            result.errors.append(f"{partner['name']}: {error}")
+            continue
+
+        connected_ids = sorted(
+            location_id
+            for location_id, facts in locations.items()
+            if facts.get("connected_at")
+        )
+        active_ids = sorted(active_rows_ids(locations, active_only=True))
+        payment_ids = sorted(
+            location_id
+            for location_id, facts in locations.items()
+            if facts.get("has_api_amounts")
+        )
+
+        store.replace_usage(
+            partner["id"],
+            checked,
+            connected_ids,
+            active_ids,
+            payment_ids,
+            source="altegio_bi",
+            location_details=locations,
+        )
+        result.partners_synced += 1
+        result.partners.append(
+            PartnerSyncResult(
+                partner_id=partner["id"],
+                partner_name=partner["name"],
+                application_ids=app_ids,
+                connected=len(connected_ids),
+                active=len(active_ids),
+                payment=len(payment_ids),
             )
+        )
 
     return result
+
+
+def sync_period(store: Store, period: str) -> SyncResult:
+    """Deliberate no-op post-pivot to manual reconciliation base uploads.
+
+    After the pivot away from the Altegio BI snapshot, partner reports are
+    reconciled against a monthly base file that the admin uploads through
+    the new admin page (``/admin/reconciliation``). The hourly worker and
+    the ``sync-altegio`` CLI command therefore no longer need to pull
+    anything from MySQL or the MCP BI server — this function used to be
+    that pull.
+
+    It is kept as a no-op (not removed) so the historical sync path is
+    recoverable if anyone ever wants to revert to the BI snapshot: see
+    ``docs/epic-reconciliation.md`` for the rationale. The full MySQL and
+    MCP write helpers above are intentionally left in place so the
+    escape hatch stays buildable.
+    """
+    del store  # intentionally unused now
+    checked = valid_period(period)
+    if not checked:
+        raise ValueError("invalid_period")
+    log.info(
+        "Altegio usage sync is a no-op: reconciliation runs against the "
+        "admin-uploaded monthly base instead"
+    )
+    return SyncResult(
+        period=checked,
+        partners_synced=0,
+        partners_skipped=[],
+        errors=[],
+    )
 
 
 def active_rows_ids(

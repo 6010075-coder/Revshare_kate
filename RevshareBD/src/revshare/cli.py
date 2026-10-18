@@ -69,31 +69,30 @@ def cmd_preview(args: argparse.Namespace) -> int:
 
 
 def cmd_sync_altegio(args: argparse.Namespace) -> int:
-    from revshare.altegio_sync import sync_period
-    from revshare.secrets import load_secrets
-    from revshare.store import Store
+    """Deprecated: Altegio BI sync is a no-op post-pivot.
 
-    load_secrets()
-    store = Store()
-    try:
-        result = sync_period(store, args.month)
-    except RuntimeError as error:
-        print(json.dumps({"ok": False, "error": str(error)}), file=sys.stderr)
-        return 1
+    Partner reports are now reconciled against the monthly base file that
+    the admin uploads through the admin page (``/admin/reconciliation``).
+    This command is kept so existing automation does not crash with an
+    unknown subcommand error, but it does nothing.
+    """
     print(
         json.dumps(
             {
-                "ok": True,
-                "period": result.period,
-                "partners_synced": result.partners_synced,
-                "partners_skipped": result.partners_skipped,
-                "errors": result.errors,
+                "ok": False,
+                "deprecated": True,
+                "message": (
+                    "Altegio BI sync is deprecated. Upload the monthly "
+                    "reconciliation base through the admin upload page "
+                    "instead."
+                ),
+                "period": args.month,
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    return 0 if result.partners_synced or not result.errors else 1
+    return 1
 
 
 def cmd_import_usage(args: argparse.Namespace) -> int:

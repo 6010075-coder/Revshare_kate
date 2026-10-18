@@ -901,7 +901,6 @@ def create_app(
     ):
         selected = valid_period(period) or current_period()
         items = app.state.store.dashboard(selected)
-        base_meta = app.state.store.get_reconciliation_base(selected)
         counts = {
             "total": len(items),
             "submitted": sum(item["report_id"] is not None for item in items),
@@ -964,7 +963,6 @@ def create_app(
                 revshare_currencies=sorted(
                     {item["report_currency"] for item in reported}
                 ),
-                base_meta=base_meta,
             ),
         )
 
@@ -2025,11 +2023,11 @@ def create_app(
         except Exception:
             log.exception("Altegio snapshot import failed")
             return RedirectResponse(
-                f"/admin/settings?period={selected}&import=error&tab=altegio",
+                f"/admin/settings?period={selected}&import=error#altegio",
                 status_code=303,
             )
         return RedirectResponse(
-            f"/admin/settings?period={selected}&imported={result['imported']}&tab=altegio",
+            f"/admin/settings?period={selected}&imported={result['imported']}#altegio",
             status_code=303,
         )
 
@@ -2041,23 +2039,23 @@ def create_app(
         except RuntimeError as error:
             if str(error) == "altegio_mysql_missing":
                 return RedirectResponse(
-                    f"/admin/settings?period={selected}&sync=missing&tab=altegio",
+                    f"/admin/settings?period={selected}&sync=missing#altegio",
                     status_code=303,
                 )
             return RedirectResponse(
-                f"/admin/settings?period={selected}&sync=error&tab=altegio",
+                f"/admin/settings?period={selected}&sync=error#altegio",
                 status_code=303,
             )
         except Exception:
             log.exception("Altegio MySQL sync failed")
             return RedirectResponse(
-                f"/admin/settings?period={selected}&sync=error&tab=altegio",
+                f"/admin/settings?period={selected}&sync=error#altegio",
                 status_code=303,
             )
         return RedirectResponse(
             (
                 f"/admin/settings?period={selected}&synced={result.partners_synced}"
-                f"&skipped={len(result.partners_skipped)}&tab=altegio"
+                f"&skipped={len(result.partners_skipped)}#altegio"
             ),
             status_code=303,
         )
@@ -2464,7 +2462,7 @@ def create_app(
         try:
             client_id = register_client(redirect_uri)
         except MCPError:
-            return RedirectResponse("/admin/settings?mcp=error&tab=altegio", status_code=303)
+            return RedirectResponse("/admin/settings?mcp=error#altegio", status_code=303)
         verifier, challenge = pkce_pair()
         state = secrets.token_urlsafe(32)
         app.state.mcp_oauth_pending[state] = {
@@ -2483,7 +2481,7 @@ def create_app(
     ):
         pending = app.state.mcp_oauth_pending.pop(state, None)
         if error or not pending or not code:
-            return RedirectResponse("/admin/settings?mcp=denied&tab=altegio", status_code=303)
+            return RedirectResponse("/admin/settings?mcp=denied#altegio", status_code=303)
         try:
             payload = exchange_code(
                 client_id=pending["client_id"],
@@ -2493,10 +2491,10 @@ def create_app(
             )
             store_token_payload(app.state.store, pending["client_id"], payload)
         except MCPError:
-            return RedirectResponse("/admin/settings?mcp=error&tab=altegio", status_code=303)
-        return RedirectResponse("/admin/settings?mcp=connected&tab=altegio", status_code=303)
+            return RedirectResponse("/admin/settings?mcp=error#altegio", status_code=303)
+        return RedirectResponse("/admin/settings?mcp=connected#altegio", status_code=303)
 
-    SETTINGS_TABS = ("general", "altegio", "telegram", "schedule", "notices", "rates")
+    SETTINGS_TABS = ("general", "bot", "digest", "schedule", "notices")
 
     @app.get("/admin/settings", response_class=HTMLResponse)
     def settings_page(
@@ -2623,7 +2621,7 @@ def create_app(
         app.state.store.set_idle_months_threshold(str(threshold))
         selected = valid_period(period) or current_period()
         return RedirectResponse(
-            f"/admin/settings?period={selected}&saved=1&tab=altegio", status_code=303
+            f"/admin/settings?period={selected}&saved=1#altegio", status_code=303
         )
 
     @app.post("/admin/settings/telegram")
@@ -2660,7 +2658,7 @@ def create_app(
             period=period,
         )
         return RedirectResponse(
-            f"/admin/settings?period={period}&saved=1&tab=rates", status_code=303
+            f"/admin/settings?period={period}&saved=1#rates", status_code=303
         )
 
     @app.post("/admin/rates/refresh")
@@ -2668,7 +2666,7 @@ def create_app(
         rates_period = valid_period(period) or current_period()
         app.state.store.fx_snapshot(rates_period, refresh=True)
         return RedirectResponse(
-            f"/admin/settings?period={rates_period}&saved=1&tab=rates", status_code=303
+            f"/admin/settings?period={rates_period}&saved=1#rates", status_code=303
         )
 
     @app.post("/admin/notices")
@@ -2713,7 +2711,7 @@ def create_app(
     @app.post("/admin/notices/run")
     def run_due_notices():
         send_due_notices(app.state.store)
-        return RedirectResponse("/admin/settings?notice=ran&tab=telegram", status_code=303)
+        return RedirectResponse("/admin/settings?notice=ran&tab=schedule", status_code=303)
 
     @app.post("/admin/partners/{partner_id}/archive")
     def archive_partner(partner_id: int):

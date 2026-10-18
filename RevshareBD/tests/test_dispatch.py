@@ -78,8 +78,12 @@ def test_russian_partner_gets_russian_text_and_kate_gets_russian_digest(tmp_path
         sender=lambda chat, text: sent.append((chat, text)),
     )
     partner_message = next(text for chat, text in sent if chat == "321")
-    assert partner_message.startswith("Здравствуйте")
-    assert "http" in partner_message
+    # Telegram invite uses the dedicated invite_telegram default: a formal
+    # Russian wording that intentionally omits the web-form link (the xlsx
+    # template attached below carries the report flow).
+    assert partner_message.startswith("Уважаемый партнёр")
+    assert "2026-08" in partner_message
+    assert "http" not in partner_message
 
     digest = digest_text(store, "2026-08", "ru")
     assert digest.startswith("Статус revshare за 2026-08")
@@ -284,3 +288,125 @@ def test_partner_notice_is_claimed_once_without_force(tmp_path):
     assert first["status"] == "sent"
     assert second == {"status": "skipped", "detail": "already_sent"}
     assert len(sent) == 1
+
+
+def _count_template_interactions(store: Store, partner_id: int) -> int:
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT COUNT(*) AS c FROM bot_interactions "
+            "WHERE partner_id = ? AND kind = 'template_sent'",
+            (partner_id,),
+        ).fetchone()
+    return int(row["c"])
+
+
+def test_template_attaches_only_on_invite(tmp_path):
+    store = Store(tmp_path / "test.db")
+    partner_id = store.add_partner(
+        name="Template App",
+        legal_name="",
+        legal_country="",
+        altegio_legal_entity="",
+        contact_name="",
+        email="",
+        telegram="@template",
+        report_channel="telegram",
+        token="template-token",
+        rate=0.2,
+        currency="USD",
+    )
+    store.bind_telegram_chat("template-token", "999")
+    partner = store.partner(partner_id)
+
+    documents: list[tuple[str, bytes, str, str]] = []
+    document_sender = lambda chat, doc, name, caption: documents.append(
+        (chat, doc, name, caption)
+    )
+    sender = lambda chat, text: None
+
+    invite = send_partner_notice(
+        store,
+        partner,
+        "2026-08",
+        "invite",
+        sender=sender,
+        document_sender=document_sender,
+        force=True,
+    )
+    assert invite["status"] == "sent"
+    assert len(documents) == 1
+    chat, doc, name, caption = documents[0]
+    assert chat == "999"
+    assert name == "revshare_template_2026-08.xlsx"
+    assert caption == "Шаблон для заполнения"
+    assert doc.startswith(b"PK")  # XLSX files are ZIPs starting with PK
+    assert _count_template_interactions(store, partner_id) == 1
+
+    reminder = send_partner_notice(
+        store,
+        partner,
+        "2026-08",
+        "reminder",
+        sender=sender,
+        document_sender=document_sender,
+        force=True,
+    )
+    last = send_partner_notice(
+        store,
+        partner,
+        "2026-08",
+        "last",
+        sender=sender,
+        document_sender=document_sender,
+        force=True,
+    )
+    overdue = send_partner_notice(
+        store,
+        partner,
+        "2026-08",
+        "overdue",
+        sender=sender,
+        document_sender=document_sender,
+        force=True,
+    )
+
+    assert reminder["status"] == "sent"
+    assert last["status"] == "sent"
+    assert overdue["status"] == "sent"
+    assert len(documents) == 1  # still only the invite
+    assert _count_template_interactions(store, partner_id) == 1
+
+
+def test_email_invite_does_not_attach_template(tmp_path):
+    store = Store(tmp_path / "test.db")
+    partner_id = store.add_partner(
+        name="Mail Template App",
+        legal_name="",
+        legal_country="",
+        altegio_legal_entity="",
+        contact_name="",
+        email="finance@example.com",
+        telegram="",
+        report_channel="email",
+        token="mail-template-token",
+        rate=0.2,
+        currency="USD",
+    )
+    documents: list[tuple[str, bytes, str, str]] = []
+    letters: list[tuple[str, str, str, str]] = []
+    result = send_partner_notice(
+        store,
+        store.partner(partner_id),
+        "2026-08",
+        "invite",
+        mail_sender=lambda to, subject, body, html: letters.append(
+            (to, subject, body, html)
+        ),
+        document_sender=lambda chat, doc, name, caption: documents.append(
+            (chat, doc, name, caption)
+        ),
+        force=True,
+    )
+    assert result["status"] == "sent"
+    assert documents == []
+    assert _count_template_interactions(store, partner_id) == 0

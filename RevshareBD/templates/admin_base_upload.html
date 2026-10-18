@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field %}
+{% block title %}{{ t("reconciliation_base_title", period=period) }}{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">{{ t("reporting_period") }}</p>
+    <h1>{{ t("reconciliation_base_title", period=period) }}</h1>
+  </div>
+  <a class="button secondary" href="/">{{ t("show") }}</a>
+</section>
+
+{% if request.query_params.get("saved") == "1" and success_count %}
+<div class="notice neutral">{{ t("reconciliation_base_success", period=period, n=success_count) }}</div>
+{% endif %}
+{% if form_error %}
+<div class="notice warning">{{ form_error }}</div>
+{% endif %}
+
+{# Step 3: the live progress widget is rendered only when a revalidation
+   task is in flight. The element carries the task id in a data-* attribute
+   so the inline script below can poll the status endpoint. #}
+{% if revalidation_task_id %}
+<section class="card revalidation-progress-card">
+  <h2>{{ t("revalidation_progress_title") }}</h2>
+  <div id="revalidation-progress"
+       class="revalidation-progress"
+       data-task-id="{{ revalidation_task_id }}"
+       data-poll-url="/admin/reconciliation-base/revalidation-status/{{ revalidation_task_id }}">
+    <div class="revalidation-progress-track">
+      <div class="revalidation-progress-bar" id="revalidation-progress-bar" style="width: 0%"></div>
+    </div>
+    <p class="revalidation-progress-label" id="revalidation-progress-label">
+      {{ t("revalidation_progress_pending") }}
+    </p>
+    <p class="revalidation-progress-current" id="revalidation-progress-current"></p>
+  </div>
+  <div class="revalidation-progress-summary" id="revalidation-progress-summary" hidden></div>
+</section>
+{% endif %}
+
+<section class="card wide-form">
+  {% if base %}
+  <div class="base-status">
+    <p><strong>{{ t("reconciliation_base_status_uploaded") }}:</strong> {{ format_local(base.uploaded_at) }}</p>
+    <p><strong>{{ t("reconciliation_base_status_rows") }}:</strong> {{ base.row_count }}</p>
+    <p><strong>{{ t("reconciliation_base_status_file") }}:</strong> <code>{{ base.file_path }}</code></p>
+    <p><strong>{{ t("reconciliation_base_status_by") }}:</strong> {{ base.uploaded_by or "—" }}</p>
+  </div>
+  {% else %}
+  <div class="base-empty">
+    <p>{{ t("reconciliation_base_empty") }}</p>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/admin/reconciliation-base/{{ period }}" enctype="multipart/form-data" class="base-upload-form">
+    {{ csrf_field(csrf_token) }}
+    <input type="hidden" name="period" value="{{ period }}">
+    <div class="field">
+      <label for="base_file">{{ t("reconciliation_base_file_hint") }}</label>
+      <input id="base_file" name="base_file" type="file" accept=".csv,.xlsx" required>
+    </div>
+    <div class="form-actions">
+      <button class="button" type="submit">{{ t("reconciliation_base_submit") }}</button>
+    </div>
+  </form>
+</section>
+
+{% if revalidation_task_id %}
+<script>
+  // Inline polling widget — small enough to keep here. Reads the task id
+  // from the data attribute and stops polling as soon as the task reaches
+  // a terminal state (done / error / cancelled).
+  (function () {
+    var root = document.getElementById("revalidation-progress");
+    if (!root) return;
+    var bar = document.getElementById("revalidation-progress-bar");
+    var label = document.getElementById("revalidation-progress-label");
+    var current = document.getElementById("revalidation-progress-current");
+    var summary = document.getElementById("revalidation-progress-summary");
+    var pollUrl = root.getAttribute("data-poll-url");
+    var doneStatuses = { done: true, error: true, cancelled: true };
+
+    function formatLabel(processed, total) {
+      return processed + " / " + total;
+    }
+
+    function render(payload) {
+      var total = Number(payload.total || 0);
+      var processed = Number(payload.processed || 0);
+      var pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+      if (bar) bar.style.width = pct + "%";
+      if (label) {
+        label.textContent = formatLabel(processed, total) + ": " +
+          (payload.current_report || "{{ t('revalidation_progress_idle') }}");
+      }
+      if (current) current.textContent = payload.status || "";
+      if (doneStatuses[payload.status] && summary) {
+        var s = payload.summary || {};
+        summary.hidden = false;
+        summary.textContent =
+          "{{ t('revalidation_summary_done', n='%n', m='%m') }}"
+            .replace("%n", s.recalculated || 0)
+            .replace("%m", s.status_changed || 0) +
+          " · " +
+          "{{ t('revalidation_summary_errors', n='%e') }}"
+            .replace("%e", s.errors || 0);
+      }
+    }
+
+    function tick() {
+      fetch(pollUrl, { headers: { "Accept": "application/json" } })
+        .then(function (r) {
+          if (!r.ok) throw new Error("status " + r.status);
+          return r.json();
+        })
+        .then(function (payload) {
+          render(payload);
+          if (!doneStatuses[payload.status]) {
+            setTimeout(tick, 400);
+          }
+        })
+        .catch(function () {
+          setTimeout(tick, 1000);
+        });
+    }
+
+    tick();
+  })();
+</script>
+{% endif %}
+{% endblock %}

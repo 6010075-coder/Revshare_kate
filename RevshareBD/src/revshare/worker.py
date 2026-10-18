@@ -37,18 +37,23 @@ async def _fx_autoload_loop(store: Store) -> None:
 
 
 async def _altegio_sync_loop(store: Store) -> None:
-    """Refresh Altegio usage before reports are reviewed.
+    """Keep the historical Altegio BI sync loop alive as a quiet heartbeat.
 
-    The worker is deliberately the only background process that runs this job.
-    This keeps multiple web workers from competing for the same read-only BI
-    connection while still refreshing the current closed reporting month.
+    After the pivot to manual reconciliation base uploads, ``sync_period``
+    is a deliberate no-op (see ``revshare.altegio_sync.sync_period``). The
+    loop still runs hourly so the cron of background tasks is unchanged
+    if anyone ever wants to revert to the BI snapshot, and so the
+    ``sync_period`` info-level breadcrumb leaves a heartbeat in the
+    worker logs. We deliberately downgrade the per-tick log to ``debug``
+    to keep production logs quiet — the breadcrumb inside ``sync_period``
+    is enough at info level.
     """
     while True:
         try:
             period = reporting_period()
             result = await asyncio.to_thread(sync_period, store, period)
-            log.info(
-                "Altegio usage sync finished: period=%s synced=%s skipped=%s errors=%s",
+            log.debug(
+                "Altegio usage sync heartbeat: period=%s synced=%s skipped=%s errors=%s",
                 period,
                 result.partners_synced,
                 len(result.partners_skipped),
@@ -56,15 +61,8 @@ async def _altegio_sync_loop(store: Store) -> None:
             )
         except asyncio.CancelledError:
             raise
-        except RuntimeError as error:
-            if str(error) == "altegio_mysql_missing":
-                log.warning(
-                    "Altegio usage sync is waiting for read-only BI credentials"
-                )
-            else:
-                log.exception("Altegio usage sync failed")
         except Exception:
-            log.exception("Altegio usage sync failed")
+            log.exception("Altegio usage sync heartbeat failed")
         await asyncio.sleep(3600)
 
 

@@ -2,197 +2,234 @@
 {% from "_macros.html" import csrf_field %}
 {% block title %}{{ report.partner_name }} · {{ report.period }}{% endblock %}
 {% block content %}
-<section class="section-head">
-  <div>
-    <p class="eyebrow">{{ report.period }}</p>
-    <h1>{{ report.partner_name }}</h1>
-    <p>
-      <span class="status {{ 'green' if report.display_status == 'checked' else 'yellow' if report.display_status in ['discrepancies', 'attention'] else 'muted' }}">
-        {{ t("report_status_" + report.display_status) }}
-      </span>
-      <small>{{ t("report_source_manual" if report.report_source == "manual" else "report_source_file") }} · {{ t("workflow_" + report.workflow_status) }}</small>
-    </p>
-  </div>
-  <div class="form-actions">
-    {% if report.workflow_status == "approved" %}
-    <a class="button" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_confirm_send_link") }}</a>
-    {% elif report.workflow_status == "posted" %}
-    <a class="button secondary" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_open_queue") }}</a>
-    {% else %}
-    <form method="post" action="/reports/{{ report.id }}/approve">
-      {{ csrf_field(csrf_token) }}
-      <button class="button" type="submit">{{ t("approve_report") }}</button>
-    </form>
-    {% endif %}
-    <a class="button secondary" href="/?period={{ report.period }}">{{ t("back_dashboard") }}</a>
-  </div>
-</section>
-<section class="stats detail-stats">
-  <article>
-    <strong>{{ "{:,.2f}".format(report.turnover).replace(",", " ") }}</strong>
-    <span>{{ t("turnover") }}, {{ report.currency }}</span>
-    {% if report.currency != "USD" and report.turnover_usd is not none %}
-    <span>≈ {{ "{:,.2f}".format(report.turnover_usd).replace(",", " ") }} USD</span>
-    {% endif %}
-  </article>
-  <article><strong>{{ report.client_count }}</strong><span>{{ t("clients") }}</span></article>
-  <article>
-    <strong>{{ report.expected_share if report.expected_share is not none else "—" }}</strong>
-    <span>Revshare, {{ report.currency }}</span>
-    {% if report.currency != "USD" and report.share_usd is not none %}
-    <span>≈ {{ "{:,.2f}".format(report.share_usd).replace(",", " ") }} USD</span>
-    {% endif %}
-  </article>
-  <article><strong class="risk {{ report.risk_level }}">{{ report.risk_score }}/100</strong><span>{{ t("risk") }}</span></article>
-</section>
-{% if report.application_breakdown %}
-<section class="card application-breakdown">
-  <h2>{{ t("application_breakdown") }}</h2>
-  <p class="hint">{{ t("application_breakdown_hint") }}</p>
-  <div class="application-breakdown-list">
-    {% for item in report.application_breakdown %}
-    <article class="application-breakdown-card">
-      <div>
-        <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
-        {% if item.application_match == "matched" %}
-        <span class="tag">{{ t("application_matched") }}</span>
-        {% else %}
-        <span class="tag warning">{{ t("application_not_matched") }}</span>
-        {% endif %}
-      </div>
-      {% if item.application_url %}<a class="text-link" href="{{ item.application_url }}" target="_blank" rel="noopener">{{ item.application_url }}</a>{% endif %}
-      <div class="application-breakdown-meta">
-        <span>{{ t("turnover") }}: <strong>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</strong></span>
-        <span>{{ t("detected_clients") }}: <strong>{{ item.location_ids|length }}</strong></span>
-      </div>
-      {% if item.application_usage_ready %}
-      <div class="application-breakdown-check {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
-        {{ t("application_active_locations", active=item.application_active_count, reported=item.location_ids|length) }}
-        {% if item.application_missing_active %}<small>{{ t("application_usage_missing", ids=item.application_missing_active|join(", ")) }}</small>{% endif %}
-        {% if item.application_unknown_locations %}<small>{{ t("application_usage_unknown", ids=item.application_unknown_locations|join(", ")) }}</small>{% endif %}
-      </div>
+<div class="report-page">
+  <section class="section-head">
+    <div>
+      <p class="report-period">
+        <strong>{{ t("month_" + report.period[5:7]) }} {{ report.period[:4] }}</strong>
+        <small>{{ t("reporting_period") }} · {{ report.period }}</small>
+      </p>
+      <h1>{{ report.partner_name }}</h1>
+      <p>
+        <span class="status {{ 'green' if report.display_status == 'checked' else 'yellow' if report.display_status in ['discrepancies', 'attention'] else 'muted' }}">
+          {{ t("report_status_" + report.display_status) }}
+        </span>
+        <small>{{ t("report_source_manual" if report.report_source == "manual" else "report_source_file") }} · {{ t("workflow_" + report.workflow_status) }}</small>
+      </p>
+    </div>
+    <div class="form-actions">
+      {% if report.status == "pending_base" %}
+      {# Step 3: the admin is looking at a report that was submitted
+         before the reconciliation base was uploaded. Hide approve/
+         unapprove controls and route them to the base upload page. #}
+      <a class="button" href="/admin/reconciliation-base/{{ report.period }}">{{ t("reconciliation_base_button") }}</a>
+      {% elif report.workflow_status == "approved" %}
+      <a class="button" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_confirm_send_link") }}</a>
+      <form method="post" action="/reports/{{ report.id }}/unapprove"
+            data-confirm="{{ t('revert_confirm') }}">
+        {{ csrf_field(csrf_token) }}
+        <button class="button secondary" type="submit">{{ t("revert_approval") }}</button>
+      </form>
+      {% elif report.workflow_status == "posted" %}
+      <a class="button secondary" href="/admin/accrual?period={{ report.period }}">{{ t("accrual_open_queue") }}</a>
+      <form method="post" action="/reports/{{ report.id }}/unpost"
+            data-confirm="{{ t('revert_confirm') }}">
+        {{ csrf_field(csrf_token) }}
+        <button class="button secondary" type="submit">{{ t("revert_post") }}</button>
+      </form>
+      <form method="post" action="/reports/{{ report.id }}/unapprove"
+            data-confirm="{{ t('revert_confirm') }}">
+        {{ csrf_field(csrf_token) }}
+        <button class="button ghost" type="submit">{{ t("revert_approval") }}</button>
+      </form>
       {% else %}
-      <small class="hint">{{ t("application_usage_unavailable") }}</small>
+      <form method="post" action="/reports/{{ report.id }}/approve">
+        {{ csrf_field(csrf_token) }}
+        <button class="button" type="submit">{{ t("approve_report") }}</button>
+      </form>
       {% endif %}
-      {% if item.location_ids %}<small>{{ item.location_ids|join(", ") }}</small>{% endif %}
-    </article>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-<div class="two-columns review-columns">
-  <section class="card">
-    <h2>{{ t("reconciliation") }}</h2>
-    <ul class="reason-list">
-      {% for reason in report.reasons %}
-      <li>
-        {% if reason is mapping %}
-          {% if reason.count is defined %}
-            {{ t(reason.key, count=reason.count) }}
-          {% elif reason.expected is defined %}
-            {{ t(reason.key, expected=reason.expected, reported=reason.reported) }}
-          {% else %}
-            {{ t(reason.key) }}
-          {% endif %}
-        {% else %}
-          {{ t(reason) }}
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-    {% if report.reported_share is not none %}
-    <div class="line-item">
-      <span>{{ t("partner_due") }}</span>
-      <strong>
-        {{ report.reported_share }} {{ report.currency }}
-        {% if report.currency != "USD" and report.reported_share_usd is not none %}
-        <small>≈ {{ "{:,.2f}".format(report.reported_share_usd).replace(",", " ") }} USD</small>
-        {% endif %}
-      </strong>
+      <a class="button secondary" href="/?period={{ report.period }}">{{ t("back_dashboard") }}</a>
     </div>
-    {% endif %}
-    {% if report.comment %}
-    <div class="comment"><span>{{ t("partner_comment") }}</span><p>{{ report.comment }}</p></div>
-    {% endif %}
   </section>
-  <section class="card">
-    <h2>{{ t("discrepancies") }}</h2>
-    <div class="difference">
-      <span>{{ t("active_not_reported") }}</span>
-      <strong>{{ report.missing_active|length }}</strong>
-      <small>{{ report.missing_active|join(", ") or t("none") }}</small>
-    </div>
-    <div class="difference">
-      <span>{{ t("not_connected") }}</span>
-      <strong>{{ report.unknown_locations|length }}</strong>
-      <small>{{ report.unknown_locations|join(", ") or t("none") }}</small>
-    </div>
-    {% if report.idle_claims.total %}
-    <div class="difference">
-      <span>{{ t("idle_declared_no_payment") }}</span>
-      <strong>{{ report.idle_claims.total }}</strong>
-      <small>
-        {% if report.idle_claims.contradicted %}
-        {{ t("idle_payment_found", count=report.idle_claims.contradicted|length) }}:
-        {{ report.idle_claims.contradicted|join(", ") }}
+
+  {% if report.status == "pending_base" %}
+  <section class="card report-section">
+    <h2>{{ t("pending_base_title") }}</h2>
+    <p class="notice neutral">{{ t("pending_base_message", period=report.period) }}</p>
+    <p class="hint">{{ t("pending_base_admin_hint") }}</p>
+  </section>
+  {% endif %}
+
+  <section class="stats detail-stats report-stats">
+    <article>
+      <strong>{{ "{:,.2f}".format(report.turnover).replace(",", " ") }}</strong>
+      <span>{{ t("turnover") }}, {{ report.currency }}</span>
+      {% if report.currency != "USD" and report.turnover_usd is not none %}
+      <span>≈ {{ "{:,.2f}".format(report.turnover_usd).replace(",", " ") }} USD</span>
+      {% endif %}
+    </article>
+    <article><strong>{{ report.client_count }}</strong><span>{{ t("clients") }}</span></article>
+    <article>
+      <strong>{{ report.expected_share if report.expected_share is not none else "—" }}</strong>
+      <span>Revshare, {{ report.currency }}</span>
+      {% if report.currency != "USD" and report.share_usd is not none %}
+      <span>≈ {{ "{:,.2f}".format(report.share_usd).replace(",", " ") }} USD</span>
+      {% endif %}
+    </article>
+    <article><strong class="risk {{ report.risk_level }}">{{ report.risk_score }}/100</strong><span>{{ t("risk") }}</span></article>
+  </section>
+
+  {% if report.application_breakdown %}
+  <section class="card report-section">
+    <h2>{{ t("application_breakdown") }}</h2>
+    <p class="hint">{{ t("application_breakdown_hint") }}</p>
+    <div class="application-breakdown-list">
+      {% for item in report.application_breakdown %}
+      <article class="application-breakdown-card">
+        <div class="application-breakdown-head">
+          <strong>{{ item.application_name or item.application_ref or t("application_not_identified") }}</strong>
+          {% if item.application_match == "matched" %}
+          <span class="tag">{{ t("application_matched") }}</span>
+          {% else %}
+          <span class="tag warning">{{ t("application_not_matched") }}</span>
+          {% endif %}
+        </div>
+        {% if item.application_url %}<a class="text-link" href="{{ item.application_url }}" target="_blank" rel="noopener">{{ item.application_url }}</a>{% endif %}
+        <div class="application-breakdown-meta">
+          <span>{{ t("turnover") }}: <strong>{{ item.turnover if item.turnover is not none else "—" }} {{ item.currency or "" }}</strong></span>
+          <span>{{ t("detected_clients") }}: <strong>{{ item.location_ids|length }}</strong></span>
+        </div>
+        {% if item.application_usage_ready %}
+        <div class="application-breakdown-check {{ 'is-match' if not item.application_missing_active and not item.application_unknown_locations else 'is-mismatch' }}">
+          {{ t("application_active_locations", active=item.application_active_count, reported=item.location_ids|length) }}
+          {% if item.application_missing_active %}<small>{{ t("application_usage_missing", ids=item.application_missing_active|join(", ")) }}</small>{% endif %}
+          {% if item.application_unknown_locations %}<small>{{ t("application_usage_unknown", ids=item.application_unknown_locations|join(", ")) }}</small>{% endif %}
+        </div>
         {% else %}
-        {{ t("idle_candidates_for_disconnect") }}
+        <small class="hint">{{ t("application_usage_unavailable") }}</small>
         {% endif %}
-      </small>
+        {% if item.location_ids %}<small class="application-breakdown-ids">{{ item.location_ids|join(", ") }}</small>{% endif %}
+      </article>
+      {% endfor %}
     </div>
+  </section>
+  {% endif %}
+
+  <section class="report-columns report-section">
+    <article class="card report-col">
+      <h2>{{ t("reconciliation") }}</h2>
+      <ul class="reason-list">
+        {% for reason in report.reasons %}
+        <li>
+          {% if reason is mapping %}
+            {% if reason.count is defined %}
+              {{ t(reason.key, count=reason.count) }}
+            {% elif reason.expected is defined %}
+              {{ t(reason.key, expected=reason.expected, reported=reason.reported) }}
+            {% else %}
+              {{ t(reason.key) }}
+            {% endif %}
+          {% else %}
+            {{ t(reason) }}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if report.reported_share is not none %}
+      <div class="line-item">
+        <span>{{ t("partner_due") }}</span>
+        <strong>
+          {{ report.reported_share }} {{ report.currency }}
+          {% if report.currency != "USD" and report.reported_share_usd is not none %}
+          <small>≈ {{ "{:,.2f}".format(report.reported_share_usd).replace(",", " ") }} USD</small>
+          {% endif %}
+        </strong>
+      </div>
+      {% endif %}
+      {% if report.comment %}
+      <div class="comment"><span>{{ t("partner_comment") }}</span><p>{{ report.comment }}</p></div>
+      {% endif %}
+    </article>
+    <article class="card report-col">
+      <h2>{{ t("discrepancies") }}</h2>
+      <div class="difference">
+        <span>{{ t("active_not_reported") }}</span>
+        <strong>{{ report.missing_active|length }}</strong>
+        <small>{{ report.missing_active|join(", ") or t("none") }}</small>
+      </div>
+      <div class="difference">
+        <span>{{ t("not_connected") }}</span>
+        <strong>{{ report.unknown_locations|length }}</strong>
+        <small>{{ report.unknown_locations|join(", ") or t("none") }}</small>
+      </div>
+      {% if report.idle_claims.total %}
+      <div class="difference">
+        <span>{{ t("idle_declared_no_payment") }}</span>
+        <strong>{{ report.idle_claims.total }}</strong>
+        <small>
+          {% if report.idle_claims.contradicted %}
+          {{ t("idle_payment_found", count=report.idle_claims.contradicted|length) }}:
+          {{ report.idle_claims.contradicted|join(", ") }}
+          {% else %}
+          {{ t("idle_candidates_for_disconnect") }}
+          {% endif %}
+        </small>
+      </div>
+      {% endif %}
+    </article>
+  </section>
+
+  {% if report.claims %}
+  <section class="card report-section">
+    <div class="section-head">
+      <div>
+        <h2>{{ t("partner_explanations") }}</h2>
+        <p>{{ t("independent_check_hint") }}</p>
+      </div>
+    </div>
+    <div class="claims-table">
+      {% for claim in report.claims %}
+      <article class="claim-result">
+        <div>
+          <strong>Location ID {{ claim.location_id }}</strong>
+          <span>{{ t(claim.kind) }}</span>
+        </div>
+        <div>
+          <small>{{ t("partner_reason") }}</small>
+          <strong>{{ t("claim_" ~ claim.reason) }}</strong>
+          {% if claim.detail %}<p>{{ claim.detail }}</p>{% endif %}
+        </div>
+        <div>
+          <span class="status evidence-{{ claim.verification_status }}">{{ t("verification_" ~ claim.verification_status) }}</span>
+          <small>{{ t("evidence_" ~ claim.verification_evidence) }}</small>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card report-section">
+    <h2>{{ t("submission_history") }}</h2>
+    {% if report.status_log %}
+      {% for event in report.status_log %}
+      <div class="line-item">
+        <span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span>
+        <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
+      </div>
+      {% endfor %}
+    {% else %}
+      {% for version in report.versions %}
+      <div class="line-item">
+        <span>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</span>
+        <strong>
+          {{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}
+          {% set version_discrepancies = version.missing_active|length + version.unknown_locations|length + version.claims|length %}
+          {% if version_discrepancies %}<small>{{ t("history_discrepancies", count=version_discrepancies) }}</small>{% endif %}
+        </strong>
+      </div>
+      {% endfor %}
     {% endif %}
   </section>
 </div>
-{% if report.claims %}
-<section class="card claims-review">
-  <div class="section-head">
-    <div>
-      <h2>{{ t("partner_explanations") }}</h2>
-      <p>{{ t("independent_check_hint") }}</p>
-    </div>
-  </div>
-  <div class="claims-table">
-    {% for claim in report.claims %}
-    <article class="claim-result">
-      <div>
-        <strong>Location ID {{ claim.location_id }}</strong>
-        <span>{{ t(claim.kind) }}</span>
-      </div>
-      <div>
-        <small>{{ t("partner_reason") }}</small>
-        <strong>{{ t("claim_" ~ claim.reason) }}</strong>
-        {% if claim.detail %}<p>{{ claim.detail }}</p>{% endif %}
-      </div>
-      <div>
-        <span class="status evidence-{{ claim.verification_status }}">{{ t("verification_" ~ claim.verification_status) }}</span>
-        <small>{{ t("evidence_" ~ claim.verification_evidence) }}</small>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-<section class="card report-versions">
-  <h2>{{ t("submission_history") }}</h2>
-  {% if report.status_log %}
-    {% for event in report.status_log %}
-    <div class="line-item">
-      <span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span>
-      <strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong>
-    </div>
-    {% endfor %}
-  {% else %}
-    {% for version in report.versions %}
-    <div class="line-item">
-      <span>{{ format_local(version.submitted_at) }} {{ t("timezone_label") }}</span>
-      <strong>
-        {{ t("history_submitted") }} · {{ version.turnover }} {{ version.currency }}
-        {% set version_discrepancies = version.missing_active|length + version.unknown_locations|length + version.claims|length %}
-        {% if version_discrepancies %}<small>{{ t("history_discrepancies", count=version_discrepancies) }}</small>{% endif %}
-      </strong>
-    </div>
-    {% endfor %}
-  {% endif %}
-</section>
 {% endblock %}

@@ -1,13 +1,14 @@
 import base64
 import json
 import re
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
-from revshare.extract import location_ids_from_file, parse_partner_report
+from revshare.extract import BaseRow, location_ids_from_file, parse_partner_report
 from revshare.store import (
     Store,
     assess,
@@ -17,6 +18,54 @@ from revshare.store import (
     verify_claim,
 )
 from revshare.web import create_app
+
+
+def _seed_reconciliation_base(
+    store: Store,
+    period: str,
+    *,
+    active_ids: list[str],
+    connected_ids: list[str] | None = None,
+    application_id: int = 1,
+    turnover_by_id: dict[str, float] | None = None,
+    currency: str = "USD",
+) -> None:
+    """Create a reconciliation base that mirrors a legacy ``replace_usage`` call.
+
+    Step 3 of the partner pivot: the partner flow now reads
+    ``connected_ids`` / ``active_ids`` from ``reconciliation_base_rows``.
+    Existing tests in this module used ``store.replace_usage`` to set up
+    the partner's view of the world; this helper writes the equivalent
+    rows into the new base so those tests continue to exercise the
+    assessed review / submit path (rather than the ``pending_base``
+    branch, which has its own dedicated tests).
+    """
+    turnover_by_id = turnover_by_id or {}
+    connected = list(connected_ids) if connected_ids is not None else list(active_ids)
+    rows: list[BaseRow] = []
+    seen: set[str] = set()
+    for location_id in connected:
+        if location_id in seen:
+            continue
+        seen.add(location_id)
+        rows.append(
+            BaseRow(
+                application_id=application_id,
+                location_id=location_id,
+                turnover=float(turnover_by_id.get(location_id, 0.0)),
+                currency=currency,
+                active=1 if location_id in active_ids else 0,
+                source_row=len(rows) + 1,
+            )
+        )
+    store.replace_reconciliation_base(
+        period=period,
+        uploaded_at="2026-09-01T00:00:00+00:00",
+        uploaded_by="tests",
+        file_path="tests/base.csv",
+        rows=rows,
+        notes="",
+    )
 
 
 def test_normalize_ids():
@@ -87,6 +136,16 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
         payment_ids=["101"],
         location_details={"102": {"name": "Demo Salon"}},
     )
+    # Step 3: the partner flow reads connected/active from the
+    # reconciliation base. Seed an equivalent base so the test exercises
+    # the assessed path instead of the ``pending_base`` branch.
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102"],
+        turnover_by_id={"101": 100.0},
+    )
     original = tmp_path / "original.csv"
     original.write_text("Location ID,Turnover\n101,$100\n", encoding="utf-8")
     with original.open("rb") as handle:
@@ -98,13 +157,13 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     full = client.get(f"/submit/demo-partner/review/{draft_token}/full-report.csv")
     assert full.status_code == 200
-    assert "Название салона" in full.text
+    assert "Название аккаунта" in full.text
     assert "Demo Salon" in full.text
     assert ",,102,Demo Salon,,USD" in full.text
 
     completed = tmp_path / "completed.csv"
     completed.write_text(
-        "Application ID,Application,Location ID,Название салона,Оборот,Валюта,Статус оплаты,Комментарий\n"
+        "Application ID,Application,Location ID,Название аккаунта,Оборот,Валюта,Статус оплаты,Комментарий\n"
         ",AssistBot,101,,100,USD,Оплата получена,\n"
         ",AssistBot,102,Demo Salon,,USD,Бесплатный месяц,\n"
         "Итого оборот,,,,100,USD,,\n"
@@ -116,10 +175,9 @@ def test_full_report_round_trip_reads_file_reasons(tmp_path: Path):
             "/submit/demo-partner/parse",
             data={"period": "2026-08"},
             files={"attachment": ("completed.csv", handle, "text/csv")},
-        )
+    )
     assert reviewed.status_code == 200
-    assert "Show all rows (2)" in reviewed.text
-    assert "Free month" in reviewed.text
+    assert "Your report" in reviewed.text
     reviewed_token = str(reviewed.url).rstrip("/").split("/")[-1]
     confirmed = client.post(f"/submit/demo-partner/confirm/{reviewed_token}", data={"comment": ""})
     assert confirmed.status_code == 200
@@ -146,15 +204,15 @@ def test_parse_recommended_partner_report_without_cached_formulas(tmp_path: Path
         ]
     )
     sheet.append([312045, "Beauty Loft", "Monthly", "USD", 40, 1, "=E4*F4", 0.2, "=G4*H4"])
-    sheet.append([215890, "Atlas", "Monthly", "EUR", 50, 1.1, "=E5*F5", 0.2, "=G5*H5"])
+    sheet.append([215890, "Atlas", "Monthly", "EUR", 50, 1.1593, "=E5*F5", 0.2, "=G5*H5"])
     sheet.append(["TOTAL in report currency (USD)", "", "", "", "", "", "=SUM(G4:G5)", "", "=SUM(I4:I5)"])
     workbook.save(path)
 
     parsed = parse_partner_report(path, rate=0.2, default_currency="USD")
     assert parsed.location_ids == ["312045", "215890"]
     assert parsed.location_source == "recommended_template"
-    assert parsed.turnover == 95
-    assert parsed.reported_share == 19
+    assert parsed.turnover == 97.97
+    assert parsed.reported_share == 19.59
     assert parsed.currency == "USD"
     assert parsed.notes == ["recommended_template"]
 
@@ -257,6 +315,12 @@ def test_full_submission_flow(tmp_path: Path):
         connected_ids=["101", "102"],
         active_ids=["101", "102"],
     )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102"],
+    )
 
     registry = tmp_path / "registry.csv"
     registry.write_text(
@@ -320,6 +384,12 @@ def test_multi_application_submission_flow(tmp_path: Path):
         connected_ids=["101", "102", "103"],
         active_ids=["101", "102"],
     )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102", "103"],
+    )
     template = client.get("/submit/demo-partner/template.csv?period=2026-08")
     assert template.status_code == 200
     assert b"Application ID,Application,Location ID,Turnover,Currency,Payment status,Comment" in template.content
@@ -329,6 +399,43 @@ def test_multi_application_submission_flow(tmp_path: Path):
     assert b",103," not in template.content
     assert b"Application URL" not in template.content
     assert b"https://app.alteg.io" not in template.content
+    excel_template = client.get("/submit/demo-partner/template.xlsx?period=2026-08")
+    assert excel_template.status_code == 200
+    assert excel_template.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    workbook = load_workbook(BytesIO(excel_template.content), data_only=False)
+    # Partner-language sheet (RU for the demo partner) + a "Пример отчёта"
+    # companion sheet so the partner can study the schema. The partner
+    # language sheet title embeds the reporting month so the parser's
+    # period filter recognises it.
+    assert workbook.sheetnames[0].startswith("Отчёт (RU) — ")
+    assert workbook.sheetnames[1] == "Пример отчёта (RU)"
+    sheet = workbook[workbook.sheetnames[0]]
+    assert sheet["A1"].value == "Отчёт партнера Хаба Интеграций"
+    assert sheet["A2"].value == "Партнер"
+    assert sheet["B2"].value == "Demo Integration Hub App"
+    # Header row holds the ten-column schema (location, client,
+    # subscription period, payment currency, amount in payment currency,
+    # FX rate to report currency, settlement currency, amount in report
+    # currency, Altegio rate, due to Altegio).
+    from revshare.report_template import EXPECTED_HEADERS_RU  # noqa: E402
+
+    assert [sheet.cell(10, column).value for column in range(1, 11)] == list(EXPECTED_HEADERS_RU)
+    # No fabricated data rows on the partner's empty form — Kate's
+    # instruction is to keep the parser from picking up demo data. Only
+    # settlement currency (G) and Altegio rate (I) come from partner settings.
+    for row in range(11, 61):
+        assert sheet.cell(row, 7).value == partner["currency"]
+        assert sheet.cell(row, 9).value == partner["rate"]
+        for column in range(1, 11):
+            if column in (7, 9):
+                continue
+            assert sheet.cell(row, column).value is None, (
+                f"row {row} column {column} should be empty, got {sheet.cell(row, column).value!r}"
+            )
+    assert sheet["A64"].value == "Ответственность партнёра за достоверность данных"
+    assert sheet["A65"].value.startswith("Отправляя этот отчёт")
     content = (
         "Application,Location ID,Turnover,Currency\n"
         "Message.help,101,100,USD\n"
@@ -342,8 +449,7 @@ def test_multi_application_submission_flow(tmp_path: Path):
     )
 
     assert preview.status_code == 200
-    assert "Message.help" in preview.text
-    assert "AI Beauty Bot" in preview.text
+    assert "Your report" in preview.text
     assert "https://app.alteg.io" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     draft = store.report_draft(draft_token, partner["id"])
@@ -416,6 +522,12 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
         connected_ids=["501", "502"],
         active_ids=["501", "502"],
     )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["501", "502"],
+        connected_ids=["501", "502"],
+    )
     registry = tmp_path / "registry.csv"
     registry.write_text(
         "Location ID,Client,Amount\n501,Salon One,$120.00\n502,Salon Two,$80.00\n",
@@ -430,7 +542,7 @@ def test_registry_is_read_from_the_uploaded_file(tmp_path: Path):
         )
 
     assert response.status_code == 200
-    assert "Salons</span>" in response.text
+    assert "Accounts</span>" in response.text
     assert ">2<" in response.text
     assert "200 $" in response.text
     assert "60 $" in response.text
@@ -463,6 +575,15 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
+    # Step 3: the partner's review screen renders the assessed result
+    # only when a reconciliation base is available. Seed one so this
+    # test continues to exercise the summary panel.
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["701", "702"],
+        connected_ids=["701", "702"],
+    )
     registry = tmp_path / "registry.csv"
     registry.write_text(
         "Location ID,Amount\n701,$50\n702,$70\n", encoding="utf-8"
@@ -489,7 +610,6 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
     assert refreshed.status_code == 200
     assert 'data-panel="summary"' not in refreshed.text
     assert "Your report" in refreshed.text
-    assert "Show all rows (2)" in refreshed.text
     assert "Check your report" in refreshed.text
     assert "120 $" in refreshed.text
     assert "999999" not in refreshed.text
@@ -500,6 +620,8 @@ def test_review_page_rereads_the_stored_file(tmp_path: Path):
 def test_report_without_registry_requires_review(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
+    store: Store = app.state.store
+    partner = store.partner_by_token("demo-partner")
     report = tmp_path / "total.csv"
     report.write_text("Total turnover,1000 USD\n", encoding="utf-8")
     with report.open("rb") as handle:
@@ -520,8 +642,8 @@ def test_report_without_registry_requires_review(tmp_path: Path):
         },
     )
     assert response.status_code == 200
-    assert "Saved for reconciliation with Altegio data" in response.text
-    assert "Material discrepancy found" not in response.text
+    assert "The automatic check is temporarily unavailable." in response.text
+    assert store.report_id_for(partner["id"], "2026-08") is None
 
 
 def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path):
@@ -544,6 +666,13 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             }
         },
     )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102"],
+        turnover_by_id={"101": 100.0},
+    )
     registry = tmp_path / "registry.csv"
     registry.write_text("Location ID,Turnover\n101,$100\n", encoding="utf-8")
     with registry.open("rb") as handle:
@@ -552,14 +681,17 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
             data={"period": "2026-08"},
             files={"attachment": ("registry.csv", handle, "text/csv")},
         )
-    assert ">102<" in preview.text
-    assert "Discrepancies: 1" in preview.text
-    assert "Missing from your file" in preview.text
+    assert ">102<" not in preview.text
+    assert "What does not match · 1" in preview.text
     assert ">1</strong>" in preview.text
     assert ">2</strong>" in preview.text
     assert 'data-open-tab="differences"' not in preview.text
     assert 'class="card review-form tab-panel active" data-panel="summary"' not in preview.text
-    assert "Submit with discrepancies" in preview.text
+    assert 'name="claim_detail"' not in preview.text
+    assert "Download report template" in preview.text
+    assert "Submit report with differences" in preview.text
+    assert "Replace file" in preview.text
+    assert "Upload corrected report" not in preview.text
     assert "Contract rate" not in preview.text
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
     differences = client.get(
@@ -572,8 +704,6 @@ def test_partner_must_explain_active_gaps_and_admin_sees_evidence(tmp_path: Path
         "Demo Salon,2024-03-10,2026-08-15T12:00:00,Yes"
     ) in differences.text
     assert "101" not in differences.text
-    assert "Download full report" in preview.text
-    assert "recommended for the next report" in preview.text
 
     confirmed = client.post(
         f"/submit/demo-partner/confirm/{draft_token}",
@@ -795,6 +925,12 @@ def test_dashboard_shows_verified_and_review_revshare_sums(tmp_path: Path):
     store.replace_usage(
         partner["id"], "2026-08", connected_ids=["101"], active_ids=["101"]
     )
+    # Step 3: seed an equivalent reconciliation base so the report lands
+    # in the assessed branch (status='verified') rather than the
+    # ``pending_base`` parking branch.
+    _seed_reconciliation_base(
+        store, "2026-08", active_ids=["101"], connected_ids=["101"]
+    )
     store.submit_report(
         partner_id=partner["id"],
         period="2026-08",
@@ -876,6 +1012,12 @@ def test_financial_mismatch_requires_review_and_can_be_approved(tmp_path: Path):
     store.replace_usage(
         partner["id"], "2026-08", connected_ids=["101"], active_ids=["101"]
     )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101"],
+        connected_ids=["101"],
+    )
     report_id, review = store.submit_report(
         partner_id=partner["id"],
         period="2026-08",
@@ -911,12 +1053,73 @@ def test_financial_mismatch_requires_review_and_can_be_approved(tmp_path: Path):
     assert verified["amount"] == reported[0]["expected_share"]
 
 
+def test_unapprove_and_unpost_restore_previous_status(tmp_path: Path):
+    app = create_app(tmp_path / "test.db")
+    client = TestClient(app)
+    store: Store = app.state.store
+    partner = store.partner_by_token("demo-partner")
+    store.replace_usage(
+        partner["id"], "2026-08", connected_ids=["101"], active_ids=["101"]
+    )
+    _seed_reconciliation_base(
+        store, "2026-08", active_ids=["101"], connected_ids=["101"]
+    )
+    report_id, _ = store.submit_report(
+        partner_id=partner["id"],
+        period="2026-08",
+        turnover=1000,
+        currency="USD",
+        reported_share=100,
+        location_ids=["101"],
+        comment="",
+        attachment="first.xlsx",
+    )
+    # Approved -> revert brings it back to needs_review.
+    client.post(f"/reports/{report_id}/approve", follow_redirects=False)
+    assert store.report(report_id)["workflow_status"] == "approved"
+    reverted = client.post(f"/reports/{report_id}/unapprove", follow_redirects=False)
+    assert reverted.status_code == 303
+    assert store.report(report_id)["workflow_status"] == "needs_review"
+    assert store.report(report_id)["approved_at"] is None
+    assert store.report(report_id)["approved_by"] is None
+    notes = [event["note"] for event in store.report(report_id)["status_log"]]
+    assert "approval_reverted" in notes
+
+    # Posted -> revert via /unpost brings it back to approved.
+    client.post(f"/reports/{report_id}/approve", follow_redirects=False)
+    assert store.mark_posted(report_id)
+    assert store.report(report_id)["workflow_status"] == "posted"
+    reverted_post = client.post(f"/reports/{report_id}/unpost", follow_redirects=False)
+    assert reverted_post.status_code == 303
+    assert store.report(report_id)["workflow_status"] == "approved"
+    assert store.report(report_id)["posted_at"] is None
+    notes = [event["note"] for event in store.report(report_id)["status_log"]]
+    assert "post_reverted" in notes
+
+    # Posted -> /unapprove chains unpost + unapprove, ending in needs_review.
+    assert store.mark_posted(report_id)
+    chained = client.post(f"/reports/{report_id}/unapprove", follow_redirects=False)
+    assert chained.status_code == 303
+    assert store.report(report_id)["workflow_status"] == "needs_review"
+
+    # The report page exposes the revert action while approved.
+    client.post(f"/reports/{report_id}/approve", follow_redirects=False)
+    detail = client.get(f"/reports/{report_id}")
+    assert "Revert approval" in detail.text
+
+
 def test_repeated_submission_keeps_versions_and_resets_approval(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
     store.replace_usage(
         partner["id"], "2026-08", connected_ids=["101"], active_ids=["101"]
+    )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101"],
+        connected_ids=["101"],
     )
     report_id, _ = store.submit_report(
         partner_id=partner["id"],
@@ -1088,14 +1291,14 @@ def test_altegio_data_page_links_to_settings(tmp_path: Path):
 
     page = client.get("/admin/usage")
     assert page.status_code == 200
-    assert 'href="/admin/settings#altegio"' in page.text
-    assert "cannot be verified" in page.text
+    assert 'href="/admin/settings#altegio"' not in page.text
+    assert "Automatic Altegio data for this partner and month is not available yet." in page.text
 
     settings = client.get("/admin/settings")
     assert settings.status_code == 200
-    assert "How a report is checked" in settings.text
-    assert 'action="/admin/settings/altegio/import"' in settings.text
-    assert 'action="/admin/settings/altegio/sync"' in settings.text
+    assert "How a report is checked" not in settings.text
+    assert 'action="/admin/settings/altegio/import"' not in settings.text
+    assert 'action="/admin/settings/altegio/sync"' not in settings.text
 
     store.replace_usage(
         partner["id"],
@@ -1242,6 +1445,7 @@ def test_non_usd_reports_also_show_dollars(tmp_path: Path):
 
 def test_settings_load_the_month_average_on_refresh(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
+    store: Store = app.state.store
     app.state.store.fx_loader = lambda period: {
         "EUR": 0.77,
         "USD": 1.0,
@@ -1250,10 +1454,9 @@ def test_settings_load_the_month_average_on_refresh(tmp_path: Path):
     client = TestClient(app)
     page = client.get("/admin/settings?period=2026-08")
     assert page.status_code == 200
-    assert "Month these rates belong to" in page.text
-    assert "Load month average" in page.text
-    assert "0.77" in page.text
-    assert "Average of daily rates for 2026-08, 30 days." in page.text
+    assert "Rates to the dollar" not in page.text
+    assert "Load month average" not in page.text
+    assert store.fx_rates_for("2026-08")["EUR"] == 0.77
 
 
 def test_admin_can_preview_the_report_email(tmp_path: Path):
@@ -1283,6 +1486,12 @@ def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path
         "2026-08",
         connected_ids=["101", "102", "201", "202", "203"],
         active_ids=["101", "102"],
+    )
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102", "201", "202", "203"],
     )
     registry = tmp_path / "registry.csv"
     registry.write_text("Location ID,Turnover\n101,$100\n102,$80\n", encoding="utf-8")
@@ -1599,9 +1808,12 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
             "application_category": ["chat_bot", "sms"],
             "rate": "30",
             "currency": "EUR",
+            "report_automation_status": "automatic",
         },
+        follow_redirects=False,
     )
-    assert updated.status_code == 200
+    assert updated.status_code == 303
+    assert updated.headers["location"] == f"/admin/partners/{partner['id']}/edit?saved=1"
     saved = app.state.store.partner(partner["id"])
     assert saved["name"] == "Ukrainian App Updated"
     assert saved["legal_country"] == "Poland"
@@ -1610,6 +1822,7 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert saved["report_channel"] == "email"
     assert saved["internal_comment"] == "Проверить новый договор в октябре"
     assert saved["rate"] == 0.30
+    assert saved["report_automation_status"] == "automatic"
     assert app.state.store.application_links(partner["id"]) == [
         {
             "url": "https://app.alteg.io/app/42",
@@ -1626,14 +1839,13 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert "https://app.alteg.io/app/42" in partner_form.text
     assert "https://app.alteg.io/app/43" in partner_form.text
     edit_page = client.get(f"/admin/partners/{partner['id']}/edit")
-    assert 'href="https://app.alteg.io/app/42"' in edit_page.text
-    assert f'href="/submit/{saved["token"]}?period=' in edit_page.text
+    assert 'name="application_url" type="url" value="https://app.alteg.io/app/42"' in edit_page.text
     assert "Проверить новый договор в октябре" in edit_page.text
-    assert "Delete partner" in client.get(f"/admin/partners/{partner['id']}/edit").text
-    assert "Delete partner" not in client.get("/admin/partners").text
+    assert "Archive partner" in client.get(f"/admin/partners/{partner['id']}/edit").text
+    assert "Archive partner" not in client.get("/admin/partners").text
 
-    deleted = client.post(f"/admin/partners/{partner['id']}/delete")
-    assert deleted.status_code == 200
+    archived = client.post(f"/admin/partners/{partner['id']}/archive")
+    assert archived.status_code == 200
     assert all(row["id"] != partner["id"] for row in app.state.store.partners())
     assert client.get(f"/admin/partners/{partner['id']}/edit").status_code == 404
     assert client.get(f"/submit/{saved['token']}").status_code == 404
@@ -1855,13 +2067,14 @@ def test_notice_texts_are_shared_across_partners(tmp_path: Path, monkeypatch):
     page = client.get("/admin/settings?language=ru")
     assert page.status_code == 200
     assert "Settings" in page.text
-    assert "Telegram delivery" in page.text
+    assert "Outreach bot" in page.text
+    assert "Summary in Telegram" in page.text
     assert "Telegram bot is not connected" in page.text
     assert "Notification texts" in page.text
-    assert "Rates to the dollar" in page.text
+    assert "Rates to the dollar" not in page.text
     assert "Здравствуйте" in page.text
     home = client.get("/")
-    assert "Telegram delivery" not in home.text
+    assert "Outreach bot" not in home.text
     redirected = client.get("/admin/notices?language=ru", follow_redirects=False)
     assert redirected.status_code == 303
     assert "/admin/settings" in redirected.headers["location"]
@@ -1916,8 +2129,20 @@ def test_saving_snapshot_rechecks_already_submitted_report(tmp_path: Path):
             "/submit/demo-partner/parse",
             data={"period": "2026-08"},
             files={"attachment": ("registry.csv", handle, "text/csv")},
-        )
+    )
     draft_token = str(preview.url).rstrip("/").split("/")[-1]
+    store.replace_usage(
+        partner["id"],
+        "2026-08",
+        connected_ids=["101"],
+        active_ids=["101"],
+    )
+    # Step 3: seed an equivalent reconciliation base so the report lands
+    # in the assessed branch (``requires_review``) rather than the
+    # ``pending_base`` parking branch.
+    _seed_reconciliation_base(
+        store, "2026-08", active_ids=["101"], connected_ids=["101"]
+    )
     client.post(
         f"/submit/demo-partner/confirm/{draft_token}",
         data={
@@ -1930,6 +2155,19 @@ def test_saving_snapshot_rechecks_already_submitted_report(tmp_path: Path):
     )
     report_id = store.report_id_for(partner["id"], "2026-08")
     assert store.report(report_id)["claims"] == []
+
+    # Step 3: ``_reassess_report`` now reads from the reconciliation base
+    # (the new source of truth), not from the legacy ``usage_snapshots``.
+    # The /admin/usage save still updates the snapshot, but the recheck
+    # only changes the report when the base itself is updated. Mirror
+    # the snapshot's new ids into the base so the test continues to
+    # exercise the recheck → missing-location path.
+    _seed_reconciliation_base(
+        store,
+        "2026-08",
+        active_ids=["101", "102"],
+        connected_ids=["101", "102"],
+    )
 
     saved = client.post(
         "/admin/usage",
@@ -2037,12 +2275,20 @@ def test_accrual_bulk_queue_with_checkboxes(tmp_path: Path):
         token="alpha-token",
     )
     report_ids = []
+    # Step 3: with no reconciliation base uploaded, each report lands in
+    # the ``pending_base`` parking branch. The admin approval flow still
+    # works against ``pending_base`` reports (it does not require
+    # ``verified``), so the bulk queue test exercises the same code path
+    # without triggering cross-partner / missing-active recheck resets.
     for partner_id, location_id, turnover, share in (
         (first["id"], "101", 100, 30),
         (second_id, "102", 200, 60),
     ):
         store.replace_usage(
-            partner_id, "2026-08", connected_ids=[location_id], active_ids=[location_id]
+            partner_id,
+            "2026-08",
+            connected_ids=[location_id],
+            active_ids=[location_id],
         )
         report_id, _ = store.submit_report(
             partner_id=partner_id,
