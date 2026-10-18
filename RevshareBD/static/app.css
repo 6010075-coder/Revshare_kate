@@ -93,6 +93,25 @@ footer { padding: 24px; text-align: center; font-size: .78rem; color: var(--grey
 .delivery-card { margin: 0 0 28px; padding: 22px 26px; }
 .delivery-card form { margin-top: 12px; }
 .telegram-box { margin-top: 8px; }
+.invite-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+}
+.invite-link-input {
+  flex: 1 1 320px;
+  min-width: 220px;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+}
+.invite-link-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .send-now { max-width: 900px; margin: 16px auto 0; padding: 22px 26px; }
 .eyebrow { margin: 0 0 10px; text-transform: uppercase; letter-spacing: .13em; font-size: .72rem; font-weight: 700; color: var(--amber-text); }
 .period-form { background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.14); padding: 16px; border-radius: 14px; min-width: 270px; }

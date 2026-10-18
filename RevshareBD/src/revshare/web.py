@@ -17,10 +17,9 @@ from urllib.parse import urlencode, urlparse
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
 from revshare.countries import (
     ALTEGIO_LEGAL_ENTITIES,
     APP_CATEGORIES,
@@ -41,7 +40,20 @@ from revshare.application_breakdown import add_usage_checks, breakdown_for_repor
 from revshare.mysql import mysql_configured
 from revshare.dispatch import partner_letter, send_due_notices, send_partner_notice
 from revshare.mailer import mail_ready
-from revshare.extract import _normalise_report_reason, parse_partner_report
+from revshare.mcp_client import (
+    MCPError,
+    authorization_url,
+    exchange_code,
+    register_client,
+    pkce_pair,
+    store_token_payload,
+)
+from revshare.extract import (
+    BaseRow,
+    _normalise_report_reason,
+    parse_partner_report,
+    parse_reconciliation_base,
+)
 from revshare.fx import SUPPORTED_CURRENCIES, fetch_month_average_rates, valid_period
 from revshare.i18n import (
     ADMIN_LANGUAGES,
@@ -59,10 +71,12 @@ from revshare.notifications import (
     schedule_for_period,
     settings_from_form,
 )
+from revshare.report_template import build_report_template_xlsx
 from revshare.secrets import load_secrets, public_base_url, telegram_token
-from revshare.timezone import format_local_datetime
+from revshare.timezone import format_local_datetime, utc_now_iso
 from revshare.sheet_sync import flush_queued_sheet_writes
 from revshare import sheets
+from revshare.revalidation import schedule_revalidation
 from revshare.store import (
     CLAIM_REASON_KEYS,
     DEFAULT_DB,
@@ -73,16 +87,45 @@ from revshare.store import (
     normalize_ids,
 )
 
+
+def _load_connected_active_ids_for_test(
+    store: Store, period: str
+) -> tuple[set[str], set[str], bool]:
+    """Test-only mirror of the request-scoped helper in ``create_app``.
+
+    Kept here (module scope) so unit tests can call it without going
+    through a FastAPI app. The two implementations must stay in sync;
+    the request-scoped one is the source of truth at runtime.
+
+    After the pivot there is no ``usage_snapshots`` fallback any more:
+    when no base has been uploaded for the period, the report parks as
+    ``pending_base`` with empty id sets.
+    """
+    base_rows = store.get_reconciliation_base_rows(period)
+    base_meta = store.get_reconciliation_base(period)
+    if base_meta and base_rows:
+        connected = {str(row["location_id"]) for row in base_rows}
+        active = {
+            str(row["location_id"]) for row in base_rows if int(row["active"])
+        }
+        return connected, active, True
+    if base_meta:
+        return set(), set(), True
+    return set(), set(), False
+
+
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = Jinja2Templates(directory=ROOT / "templates")
 UPLOADS = ROOT / "data" / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
-MAX_REPORT_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_REPORT_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_SNAPSHOT_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_BASE_UPLOAD_BYTES = 10 * 1024 * 1024
 log = logging.getLogger("revshare.web")
 
 
 PARTNER_TABS = ("main", "settings", "history")
+PARTNER_AUTOMATION_STATUSES = ("manual", "transition", "automatic")
 REVIEW_TABS = ("summary", "differences")
 CURRENCY_SYMBOLS = {
     "AED": "د.إ",
@@ -129,7 +172,7 @@ PAYMENT_STATUS_LABELS = {
     "trial": "Триал",
     "free_trial": "Бесплатный месяц",
     "pay_next_month": "Оплата в следующем месяце",
-    "disconnected_before_month": "Салон закрыт или приложение отключено",
+    "disconnected_before_month": "Аккаунт закрыт или приложение отключено",
     "connected_after_month": "Подключён после отчётного месяца",
     "no_payment": "Не платит за приложение",
     "file_error": "Ошибка в отчёте",
@@ -370,6 +413,9 @@ DASHBOARD_SORTS = {
     "clients": lambda item: item["client_count"] if item["report_id"] else None,
     "active": lambda item: item["active_count"],
     "risk": lambda item: item["risk_score"] if item["report_id"] else None,
+    "status_updated": lambda item: (
+        item.get("status_updated_at") if item["report_id"] else None
+    ),
 }
 DEFAULT_SORT = "name"
 
@@ -576,7 +622,7 @@ async def lifespan(app: FastAPI):
     if (
         app.state.web_background_tasks
         and not testing
-        and app.state.store.setting("notice_scheduler_enabled", "1") == "1"
+        and app.state.store.setting("notice_scheduler_enabled", "0") == "1"
     ):
         tasks.append(asyncio.create_task(_notice_scheduler_loop(app.state.store)))
     yield
@@ -586,6 +632,19 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+
+
+def _invite_telegram_template(store, language: str) -> str:
+    """Return the saved global invite_telegram template or the i18n default.
+
+    The value shown in the settings page is the raw template (with
+    ``{period}`` and ``{deadline}`` placeholders intact). The dispatcher
+    formats it via ``revshare.notifications.format_notice`` at send time.
+    """
+    stored = store.setting(f"notice_text_{language}_invite_telegram", "")
+    if stored.strip():
+        return stored
+    return translator(language)("invite_telegram_default")
 
 
 def create_app(
@@ -615,6 +674,7 @@ def create_app(
         os.getenv("REVSHARE_WEB_BACKGROUND_TASKS", "0").strip() == "1"
     )
     app.state.csrf_token = secrets.token_urlsafe(32)
+    app.state.mcp_oauth_pending = {}
 
     @app.middleware("http")
     async def protect_admin(request: Request, call_next):
@@ -640,8 +700,15 @@ def create_app(
                         authorization.removeprefix("Basic ")
                     ).decode("utf-8")
                     username, password = supplied.split(":", 1)
-                    valid = hmac.compare_digest(username, admin_user) and hmac.compare_digest(
-                        password, admin_password
+                    # hmac.compare_digest in Python 3.14 raises TypeError on
+                    # non-ASCII strings; encode to latin-1 (1:1 byte mapping)
+                    # so we can compare any UTF-8 input safely.
+                    valid = hmac.compare_digest(
+                        username.encode("latin-1", "replace"),
+                        admin_user.encode("latin-1", "replace"),
+                    ) and hmac.compare_digest(
+                        password.encode("latin-1", "replace"),
+                        admin_password.encode("latin-1", "replace"),
                     )
                 except (binascii.Error, ValueError, UnicodeDecodeError):
                     valid = False
@@ -652,8 +719,22 @@ def create_app(
                     headers={"WWW-Authenticate": 'Basic realm="Integration Hub Revshare"'},
                 )
         if csrf_enabled and admin_path and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            form = await request.form()
-            supplied_token = str(form.get("csrf_token") or "")
+            supplied_token = request.headers.get("x-csrf-token", "")
+            if not supplied_token:
+                # Fallback for non-JS clients that still submit csrf_token in the body.
+                # Read the body once, validate the token, then put the raw bytes back
+                # so FastAPI can re-parse the form in the route handler.
+                body = await request.body()
+                from urllib.parse import parse_qs
+
+                parsed_form = parse_qs(body.decode("utf-8", errors="ignore"))
+                supplied_token = (parsed_form.get("csrf_token") or [""])[0]
+                if supplied_token:
+
+                    async def receive_replay() -> dict[str, object]:
+                        return {"type": "http.request", "body": body, "more_body": False}
+
+                    request._receive = receive_replay  # type: ignore[attr-defined]
             if not hmac.compare_digest(supplied_token, app.state.csrf_token):
                 return PlainTextResponse("Invalid CSRF token", status_code=403)
         if (
@@ -701,6 +782,72 @@ def create_app(
         }
         return add_usage_checks(items, usage)
 
+    def _request_is_admin(request: Request) -> bool:
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("basic "):
+            return False
+        try:
+            decoded = base64.b64decode(authorization.split(" ", 1)[1]).decode("utf-8")
+        except Exception:
+            return False
+        if ":" not in decoded:
+            return False
+        username, _, password = decoded.partition(":")
+        return hmac.compare_digest(username, admin_user) and hmac.compare_digest(
+            password, admin_password
+        )
+
+    def _request_admin_user(request: Request) -> str:
+        """Return the username from HTTP Basic auth, or "" when no auth header."""
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("basic "):
+            return ""
+        try:
+            decoded = base64.b64decode(authorization.split(" ", 1)[1]).decode("utf-8")
+        except Exception:
+            return ""
+        if ":" not in decoded:
+            return ""
+        username, _, _password = decoded.partition(":")
+        return username.strip()
+
+    def _validate_base_period(
+        request: Request, period: str
+    ) -> tuple[str, RedirectResponse | None]:
+        """Validate the ``period`` path argument.
+
+        Returns ``(valid_period, None)`` on success or ``("", redirect_response)``
+        on failure (the caller is expected to ``return error``).
+        """
+        selected = valid_period(period)
+        if selected:
+            return selected, None
+        target = f"/?error=invalid_period&upload=reconciliation_base&next={period}"
+        return "", RedirectResponse(target, status_code=303)
+
+    def _render_base_form_error(
+        request: Request,
+        period: str,
+        error_key: str,
+        *,
+        detail: str = "",
+    ) -> HTMLResponse:
+        existing = app.state.store.get_reconciliation_base(period)
+        translated = translator(current_language(request))(error_key, detail=detail)
+        return TEMPLATES.TemplateResponse(
+            request,
+            "admin_base_upload.html",
+            context(
+                request,
+                period=period,
+                base=existing,
+                form_error=translated,
+                success_count=0,
+            ),
+            status_code=400,
+        )
+
+
     def context(request: Request, **values: object) -> dict:
         partner_page = "language_override" in values
         language = str(values.pop("language_override", "")) or current_language(request)
@@ -708,12 +855,14 @@ def create_app(
         path = request.url.path
         query = str(request.url.query)
         language_next = path + (f"?{query}" if query else "")
+        admin_logged_in = _request_is_admin(request)
         return {
             "request": request,
             "current_period": current_period(),
             "period_options": recent_periods(selected_period),
             "lang": language,
             "partner_page": partner_page,
+            "admin_logged_in": admin_logged_in,
             "ui_languages": SUPPORTED_LANGUAGES if partner_page else ADMIN_LANGUAGES,
             "language_labels": LANGUAGE_LABELS,
             "language_next": language_next,
@@ -747,11 +896,12 @@ def create_app(
         status: str = "all",
         risk: str = "all",
         q: str = "",
-        sort: str = DEFAULT_SORT,
-        dir: str = "asc",
+        sort: str = "status_updated",
+        dir: str = "desc",
     ):
         selected = valid_period(period) or current_period()
         items = app.state.store.dashboard(selected)
+        base_meta = app.state.store.get_reconciliation_base(selected)
         counts = {
             "total": len(items),
             "submitted": sum(item["report_id"] is not None for item in items),
@@ -814,6 +964,7 @@ def create_app(
                 revshare_currencies=sorted(
                     {item["report_currency"] for item in reported}
                 ),
+                base_meta=base_meta,
             ),
         )
 
@@ -863,6 +1014,54 @@ def create_app(
             },
         )
 
+    def refresh_usage_before_review(partner_id: int, period: str) -> bool:
+        """Make a fresh Altegio comparison available for a new partner report."""
+        if app.state.store.usage_import(partner_id, period) is not None:
+            return True
+        mcp_ready = bool(
+            app.state.store.setting("mcp_access_token")
+            or app.state.store.setting("mcp_refresh_token")
+        )
+        if not mysql_configured() and not mcp_ready:
+            return False
+        try:
+            sync_period(app.state.store, period)
+        except Exception:
+            log.exception("Automatic Altegio check failed for period %s", period)
+            return False
+        return app.state.store.usage_import(partner_id, period) is not None
+
+    def _load_connected_active_ids(period: str) -> tuple[set[str], set[str], bool]:
+        """Return ``(connected, active, base_exists)`` for the ``assess`` call.
+
+        Prefer the new reconciliation base rows table (the authoritative
+        source). The third element of the tuple tells the caller whether a
+        base exists — the partner flow needs this to switch into the
+        ``pending_base`` branch.
+
+        Returns ``base_exists=False`` when there is no reconciliation base,
+        so callers can park the report until the admin uploads one. There
+        is no fallback to the legacy ``usage_snapshots`` reads any more:
+        ``altegio_sync`` is a no-op post-pivot and the legacy snapshot is
+        no longer populated.
+        """
+        base_rows = app.state.store.get_reconciliation_base_rows(period)
+        base_meta = app.state.store.get_reconciliation_base(period)
+        if base_meta and base_rows:
+            connected = {str(row["location_id"]) for row in base_rows}
+            active = {
+                str(row["location_id"]) for row in base_rows if int(row["active"])
+            }
+            return connected, active, True
+        if base_meta:
+            # A base metadata row exists but it has no rows. Treat it as
+            # "base exists but is empty" — the partner flow stays open but
+            # ``assess`` will return zero ids.
+            return set(), set(), True
+        # No base: the report is parked as ``pending_base`` until the admin
+        # uploads one. No legacy snapshot fallback.
+        return set(), set(), False
+
     @app.get("/submit/{token}", response_class=HTMLResponse)
     def submission_form(request: Request, token: str, period: str | None = None):
         from revshare.notifications import deadline_date
@@ -883,6 +1082,19 @@ def create_app(
                 period=selected,
                 deadline_label=deadline.strftime("%d.%m.%Y"),
             ),
+        )
+
+    @app.get("/submit/{token}/template.xlsx")
+    def report_template_xlsx(token: str, period: str | None = None):
+        partner = app.state.store.partner_by_token(token)
+        if not partner:
+            raise HTTPException(404, "Ссылка партнёра не найдена")
+        selected = valid_period(period) or current_period()
+        content = build_report_template_xlsx(app.state.store, partner, selected)
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="revshare-template-{selected}.xlsx"'},
         )
 
     @app.get("/submit/{token}/template.csv")
@@ -990,6 +1202,10 @@ def create_app(
             extraction_notes=parsed.notes,
             application_breakdown=application_breakdown,
         )
+        # If the hourly worker has not populated this month yet, run the same
+        # read-only comparison now so the partner sees a real result straight
+        # after uploading the file.
+        refresh_usage_before_review(partner["id"], selected_period)
         return RedirectResponse(
             f"/submit/{token}/review/{draft_token}",
             status_code=303,
@@ -1000,6 +1216,7 @@ def create_app(
         request: Request,
         token: str,
         draft_token: str,
+        error: str | None = None,
     ):
         partner = app.state.store.partner_by_token(token)
         if not partner:
@@ -1047,8 +1264,20 @@ def create_app(
                     application_breakdown=application_breakdown,
                 )
                 draft = app.state.store.report_draft(draft_token, partner["id"])
-        connected, active = app.state.store.usage(partner["id"], draft["period"])
-        check = assess(draft["location_ids"], connected, active)
+        snapshot_ready = refresh_usage_before_review(partner["id"], draft["period"])
+        # Step 3: read connected/active from the new reconciliation base.
+        # The partner flow uses ``base_exists`` to decide whether the
+        # review screen should show the waiting-for-base branch.
+        connected, active, base_exists = _load_connected_active_ids(
+            draft["period"]
+        )
+        if not base_exists:
+            # No base uploaded for this period yet. Skip the assessment
+            # call (it would produce a misleading score) and let the
+            # template render the waiting-for-base branch.
+            check = assess([], connected, active)
+        else:
+            check = assess(draft["location_ids"], connected, active)
         reference_ids = active
         legacy_discrepancies = discrepancy_items(draft["location_ids"], active, active)
         payment_ids = {
@@ -1075,7 +1304,12 @@ def create_app(
             if report_has_status_fields
             else legacy_discrepancies
         )
-        if application_check is not None:
+        # The application-level status check is only valid for the new
+        # template with an explicit payment-status column. Older partner
+        # files can still contain an application breakdown, but their zero
+        # amounts are not a payment status and must not create 42 missing-
+        # status errors.
+        if report_has_status_fields and application_check is not None:
             discrepancies = application_check["issues"]
         long_idle = long_idle_locations(
             app.state.store, partner["id"], draft["period"], legacy_discrepancies
@@ -1144,6 +1378,11 @@ def create_app(
                 check=check,
                 connected_count=len(connected),
                 active_count=len(active),
+                snapshot_ready=snapshot_ready,
+                # Step 3: pass the new ``base_exists`` flag to the template
+                # so the review screen can switch into the waiting-for-base
+                # branch when no reconciliation base has been uploaded yet.
+                base_exists=base_exists,
                 discrepancies=discrepancies,
                 required_discrepancies=required,
                 missing_registry_count=missing_registry_count,
@@ -1173,7 +1412,7 @@ def create_app(
                 reasons_filled=reasons_filled,
                 reasons_total=reasons_total,
                 idle_months_threshold=app.state.store.idle_months_threshold(),
-                form_error=None,
+                form_error=error,
                 active_tab=review_active_tab(
                     request, required_count=len(required)
                 ),
@@ -1182,7 +1421,7 @@ def create_app(
 
     @app.get("/submit/{token}/review/{draft_token}/full-report.csv")
     def download_full_report(token: str, draft_token: str):
-        """Download a complete, editable salon register for the partner."""
+        """Download a complete, editable account register for the partner."""
         partner = app.state.store.partner_by_token(token)
         if not partner:
             raise HTTPException(404, "Partner not found")
@@ -1251,7 +1490,7 @@ def create_app(
                 "Application ID",
                 "Application",
                 "Location ID",
-                "Название салона",
+                "Название аккаунта",
                 "Оборот",
                 "Валюта",
                 "Статус оплаты",
@@ -1408,7 +1647,12 @@ def create_app(
         share = draft["reported_share"]
         turnover = draft["turnover"]
         currency = (draft["currency"] or "USD").upper()
-        connected, active = app.state.store.usage(partner["id"], draft["period"])
+        # Step 3: the source of connected/active is the new reconciliation
+        # base. ``submit_report`` below already routes to the
+        # ``pending_base`` branch when no base is present.
+        connected, active, _base_exists = _load_connected_active_ids(
+            draft["period"]
+        )
         report_all_ids = list(ids)
         file_reasons: dict[str, str] = {}
         file_reason_details: dict[str, str] = {}
@@ -1451,11 +1695,16 @@ def create_app(
             if report_has_status_fields
             else legacy_discrepancies
         )
-        if application_check is not None:
+        if report_has_status_fields and application_check is not None:
             discrepancies = application_check["issues"]
         long_idle = long_idle_locations(
             app.state.store, partner["id"], draft["period"], legacy_discrepancies
         )
+        if app.state.store.usage_import(partner["id"], draft["period"]) is None:
+            return RedirectResponse(
+                f"/submit/{token}/review/{draft_token}?error=snapshot_missing",
+                status_code=303,
+            )
         submitted_claims = {
             (location, kind): {"reason": reason, "detail": detail.strip()}
             for location, kind, reason, detail in zip(
@@ -1535,6 +1784,141 @@ def create_app(
                 file_source="column" if ids else "not_found",
                 discrepancy_count=len([item for item in discrepancies if item["required"]]),
             ),
+        )
+
+    @app.get("/admin/reconciliation-base/{period}", response_class=HTMLResponse)
+    def reconciliation_base_form(request: Request, period: str):
+        valid, error = _validate_base_period(request, period)
+        if not valid:
+            return error  # type: ignore[return-value]
+        existing = app.state.store.get_reconciliation_base(valid)
+        # Step 3: the upload page polls the revalidation task started by
+        # the POST. Prefer the fresh task id from the redirect query
+        # (``?task_id=...``) so the user always sees the progress bar
+        # for the upload they just performed; otherwise pick up the most
+        # recent in-flight task for this period (a refresh, an admin
+        # background job, etc.).
+        task_id = (request.query_params.get("task_id") or "").strip()
+        if not task_id:
+            active_tasks = app.state.store.list_active_revalidation_tasks(valid)
+            if active_tasks:
+                task_id = active_tasks[0]["id"]
+        return TEMPLATES.TemplateResponse(
+            request,
+            "admin_base_upload.html",
+            context(
+                request,
+                period=valid,
+                base=existing,
+                form_error=request.query_params.get("error") or None,
+                success_count=int(request.query_params.get("n") or 0),
+                revalidation_task_id=task_id,
+            ),
+        )
+
+    @app.get(
+        "/admin/reconciliation-base/revalidation-status/{task_id}",
+        response_class=Response,
+    )
+    def revalidation_status(task_id: str):
+        """Return the live progress JSON for the revalidation worker.
+
+        404 when the task id is unknown. The endpoint is admin-only via
+        the surrounding ``require_admin_auth`` gate; partners cannot hit
+        it because no public route maps here.
+        """
+        row = app.state.store.get_revalidation_task(task_id)
+        if row is None:
+            raise HTTPException(404, "Revalidation task not found")
+        payload = {
+            "task_id": row["id"],
+            "period": row["period"],
+            "status": row["status"],
+            "total": int(row["total"]),
+            "processed": int(row["processed"]),
+            "current_report": str(row["current_report"] or ""),
+            "summary": row.get("summary") or {},
+            "started_at": str(row["started_at"] or ""),
+            "finished_at": str(row["finished_at"] or ""),
+        }
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False),
+            media_type="application/json",
+        )
+
+    @app.post("/admin/reconciliation-base/{period}")
+    async def reconciliation_base_upload(
+        request: Request,
+        period: str,
+        base_file: UploadFile | None = File(None),
+    ):
+        valid, error = _validate_base_period(request, period)
+        if not valid:
+            return error  # type: ignore[return-value]
+        if not base_file or not base_file.filename:
+            return _render_base_form_error(
+                request, valid, "reconciliation_base_error_wrong_extension"
+            )
+        suffix = Path(base_file.filename).suffix.lower()
+        if suffix not in {".csv", ".xlsx"}:
+            return _render_base_form_error(
+                request, valid, "reconciliation_base_error_wrong_extension"
+            )
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", Path(base_file.filename).name)
+        content = await base_file.read(MAX_BASE_UPLOAD_BYTES + 1)
+        if len(content) > MAX_BASE_UPLOAD_BYTES:
+            return _render_base_form_error(
+                request, valid, "reconciliation_base_error_too_large"
+            )
+        target_dir = UPLOADS / "reconciliation_base"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{valid}-{secrets.token_hex(4)}{suffix}"
+        path = target_dir / stored_name
+        path.write_bytes(content)
+        try:
+            parsed = parse_reconciliation_base(path)
+        except Exception as exc:  # noqa: BLE001 — surface parser issues, never crash
+            path.unlink(missing_ok=True)
+            return _render_base_form_error(
+                request,
+                valid,
+                "reconciliation_base_error_parser",
+                detail=str(exc),
+            )
+        if parsed.error:
+            path.unlink(missing_ok=True)
+            return _render_base_form_error(
+                request,
+                valid,
+                "reconciliation_base_error_parser",
+                detail=parsed.error,
+            )
+        if not parsed.rows:
+            path.unlink(missing_ok=True)
+            return _render_base_form_error(
+                request, valid, "reconciliation_base_error_empty"
+            )
+        rows: list[BaseRow] = list(parsed.rows)
+        uploaded_by = _request_admin_user(request) or admin_user
+        relative_path = f"reconciliation_base/{stored_name}"
+        app.state.store.replace_reconciliation_base(
+            period=valid,
+            uploaded_at=utc_now_iso(),
+            uploaded_by=uploaded_by,
+            file_path=relative_path,
+            rows=rows,
+            notes="\n".join(parsed.notes),
+        )
+        # Step 3: every existing report for this period must be re-evaluated
+        # against the freshly loaded base. Schedule a background worker and
+        # pass the task id back so the upload page can poll its progress.
+        task_id = schedule_revalidation(app.state.store, period=valid)
+        return RedirectResponse(
+            (
+                f"/admin/reconciliation-base/{valid}"
+                f"?saved=1&n={len(rows)}&task_id={task_id}"
+            ),
+            status_code=303,
         )
 
     @app.get("/admin/usage", response_class=HTMLResponse)
@@ -1641,11 +2025,11 @@ def create_app(
         except Exception:
             log.exception("Altegio snapshot import failed")
             return RedirectResponse(
-                f"/admin/settings?period={selected}&import=error#altegio",
+                f"/admin/settings?period={selected}&import=error&tab=altegio",
                 status_code=303,
             )
         return RedirectResponse(
-            f"/admin/settings?period={selected}&imported={result['imported']}#altegio",
+            f"/admin/settings?period={selected}&imported={result['imported']}&tab=altegio",
             status_code=303,
         )
 
@@ -1657,23 +2041,23 @@ def create_app(
         except RuntimeError as error:
             if str(error) == "altegio_mysql_missing":
                 return RedirectResponse(
-                    f"/admin/settings?period={selected}&sync=missing#altegio",
+                    f"/admin/settings?period={selected}&sync=missing&tab=altegio",
                     status_code=303,
                 )
             return RedirectResponse(
-                f"/admin/settings?period={selected}&sync=error#altegio",
+                f"/admin/settings?period={selected}&sync=error&tab=altegio",
                 status_code=303,
             )
         except Exception:
             log.exception("Altegio MySQL sync failed")
             return RedirectResponse(
-                f"/admin/settings?period={selected}&sync=error#altegio",
+                f"/admin/settings?period={selected}&sync=error&tab=altegio",
                 status_code=303,
             )
         return RedirectResponse(
             (
                 f"/admin/settings?period={selected}&synced={result.partners_synced}"
-                f"&skipped={len(result.partners_skipped)}#altegio"
+                f"&skipped={len(result.partners_skipped)}&tab=altegio"
             ),
             status_code=303,
         )
@@ -1739,8 +2123,10 @@ def create_app(
         )
 
     @app.get("/admin/partners", response_class=HTMLResponse)
-    def partners_page(request: Request):
-        partners = [dict(row) for row in app.state.store.partners()]
+    def partners_page(request: Request, view: str = ""):
+        archived = view == "archived"
+        source = app.state.store.archived_partners() if archived else app.state.store.partners()
+        partners = [dict(row) for row in source]
         for partner in partners:
             partner["application_categories"] = sorted(
                 {
@@ -1752,7 +2138,12 @@ def create_app(
         return TEMPLATES.TemplateResponse(
             request,
             "partners.html",
-            context(request, partners=partners),
+            context(
+                request,
+                partners=partners,
+                archived=archived,
+                archived_count=len(app.state.store.archived_partners()),
+            ),
         )
 
     @app.post("/admin/partners")
@@ -1786,7 +2177,12 @@ def create_app(
 
     @app.get("/admin/partners/{partner_id}/edit", response_class=HTMLResponse)
     def edit_partner_page(
-        request: Request, partner_id: int, tab: str = "", saved: str = ""
+        request: Request,
+        partner_id: int,
+        tab: str = "",
+        saved: str = "",
+        view: str = "",
+        deleted: str = "",
     ):
         partner = app.state.store.partner(partner_id)
         if not partner or not partner["active"]:
@@ -1797,6 +2193,14 @@ def create_app(
         )
         settings = payload["notice_settings"]
         history = app.state.store.partner_history(partner_id)
+        # History tab can show either confirmed reports (default) or
+        # bot-created drafts waiting for partner confirmation.
+        history_view = view if view in ("reports", "drafts") else "reports"
+        drafts = (
+            app.state.store.drafts_for_partner(partner_id)
+            if history_view == "drafts"
+            else []
+        )
         return TEMPLATES.TemplateResponse(
             request,
             "partner_edit.html",
@@ -1804,6 +2208,8 @@ def create_app(
                 request,
                 partner=payload,
                 history=history,
+                drafts=drafts,
+                history_view=history_view,
                 history_chart=history_chart(history),
                 application_links=app.state.store.application_links(partner_id),
                 altegio_legal_entities=ALTEGIO_LEGAL_ENTITIES,
@@ -1829,7 +2235,27 @@ def create_app(
                 active_tab=tab if tab in PARTNER_TABS else PARTNER_TABS[0],
                 partner_tabs=PARTNER_TABS,
                 saved=saved == "1",
+                unlinked=request.query_params.get("unlinked") == "1",
+                draft_deleted=deleted == "1" or request.query_params.get("deleted") == "1",
             ),
+        )
+
+    @app.post("/admin/partners/{partner_id}/drafts/{draft_id}/delete")
+    def delete_partner_draft(partner_id: int, draft_id: int):
+        """Hard-delete a bot-created draft from the admin profile page.
+
+        Only deletes the draft if it belongs to this partner — guards
+        against accidentally removing someone else's draft by guessing
+        an id. The CSRF middleware already protects this POST.
+        """
+        if not app.state.store.partner(partner_id):
+            raise HTTPException(404, "Partner not found")
+        deleted = app.state.store.delete_draft(draft_id, partner_id)
+        if not deleted:
+            raise HTTPException(404, "Draft not found for this partner")
+        return RedirectResponse(
+            f"/admin/partners/{partner_id}/edit?tab=history&view=drafts&deleted=1",
+            status_code=303,
         )
 
     @app.get("/admin/partners/{partner_id}/report", response_class=HTMLResponse)
@@ -1917,6 +2343,8 @@ def create_app(
         notice_key: list[str] = Form(default=[]),
         notice_day: list[str] = Form(default=[]),
         own_schedule: str = Form(""),
+        report_automation_status: str = Form(""),
+        tab: str = "",
     ):
         partner = app.state.store.partner(partner_id)
         if not partner or not partner["active"]:
@@ -1926,6 +2354,10 @@ def create_app(
             raise HTTPException(422, "Invalid Altegio legal entity")
         if report_channel not in REPORT_CHANNELS:
             raise HTTPException(422, "Invalid report channel")
+        if report_automation_status not in PARTNER_AUTOMATION_STATUSES:
+            report_automation_status = str(
+                partner["report_automation_status"] or "manual"
+            )
         if currency.upper() not in SUPPORTED_CURRENCIES:
             raise HTTPException(422, "Unsupported currency")
         try:
@@ -1967,9 +2399,17 @@ def create_app(
             notice_settings=notice_settings,
             category=links[0]["category"] if links else "",
             internal_comment=internal_comment.strip(),
+            report_automation_status=report_automation_status,
         )
         app.state.store.replace_application_links(partner_id, links)
-        return RedirectResponse("/admin/partners", status_code=303)
+        app.state.store.propagate_telegram_chat_by_handle(partner_id)
+        params = {"saved": "1"}
+        if tab in PARTNER_TABS:
+            params["tab"] = tab
+        return RedirectResponse(
+            f"/admin/partners/{partner_id}/edit?{urlencode(params)}",
+            status_code=303,
+        )
 
     @app.post("/admin/partners/{partner_id}/notifications")
     def save_partner_notifications(
@@ -2018,16 +2458,58 @@ def create_app(
             status_code=303,
         )
 
+    @app.get("/admin/settings/mcp/connect")
+    def connect_altegio_mcp(request: Request):
+        redirect_uri = str(request.base_url).rstrip("/") + "/admin/settings/mcp/callback"
+        try:
+            client_id = register_client(redirect_uri)
+        except MCPError:
+            return RedirectResponse("/admin/settings?mcp=error&tab=altegio", status_code=303)
+        verifier, challenge = pkce_pair()
+        state = secrets.token_urlsafe(32)
+        app.state.mcp_oauth_pending[state] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "verifier": verifier,
+        }
+        return RedirectResponse(
+            authorization_url(client_id, redirect_uri, state, challenge),
+            status_code=303,
+        )
+
+    @app.get("/admin/settings/mcp/callback")
+    def altegio_mcp_callback(
+        code: str = "", state: str = "", error: str = ""
+    ):
+        pending = app.state.mcp_oauth_pending.pop(state, None)
+        if error or not pending or not code:
+            return RedirectResponse("/admin/settings?mcp=denied&tab=altegio", status_code=303)
+        try:
+            payload = exchange_code(
+                client_id=pending["client_id"],
+                code=code,
+                redirect_uri=pending["redirect_uri"],
+                verifier=pending["verifier"],
+            )
+            store_token_payload(app.state.store, pending["client_id"], payload)
+        except MCPError:
+            return RedirectResponse("/admin/settings?mcp=error&tab=altegio", status_code=303)
+        return RedirectResponse("/admin/settings?mcp=connected&tab=altegio", status_code=303)
+
+    SETTINGS_TABS = ("general", "altegio", "telegram", "schedule", "notices", "rates")
+
     @app.get("/admin/settings", response_class=HTMLResponse)
     def settings_page(
         request: Request,
         language: str = "",
         saved: str = "",
         period: str = "",
+        tab: str = "",
     ):
         selected = language if language in NOTICE_LANGUAGES else current_language(request)
         if selected not in NOTICE_LANGUAGES:
             selected = "en"
+        active_tab = tab if tab in SETTINGS_TABS else "general"
         stored_url = app.state.store.setting("public_base_url") or public_base_url()
         global_schedule = app.state.store.global_schedule()
         planned = {
@@ -2059,12 +2541,25 @@ def create_app(
                 sync_error=query.get("sync") == "error",
                 sync_done=int(query.get("synced") or 0),
                 sync_skipped=int(query.get("skipped") or 0),
+                mcp_connected=bool(
+                    app.state.store.setting("mcp_refresh_token")
+                    or app.state.store.setting("mcp_access_token")
+                ),
+                mcp_status=query.get("mcp", ""),
                 altegio_mysql_ready=mysql_configured(),
+                altegio_data_ready=mysql_configured()
+                or bool(
+                    app.state.store.setting("mcp_refresh_token")
+                    or app.state.store.setting("mcp_access_token")
+                ),
                 snapshot_api_ready=bool(snapshot_url()),
                 notice_languages=NOTICE_LANGUAGES,
                 partner_notice_keys=PARTNER_NOTICE_KEYS,
                 notice_keys=NOTICE_KEYS,
                 templates=app.state.store.notice_templates(selected),
+                invite_telegram_template=_invite_telegram_template(
+                    app.state.store, selected
+                ),
                 fx_currencies=SUPPORTED_CURRENCIES,
                 fx_rates=fx["rates"],
                 fx_info=fx,
@@ -2080,9 +2575,10 @@ def create_app(
                 digest_chat=app.state.store.setting("digest_chat_id"),
                 notices_ran=request.query_params.get("notice") == "ran",
                 notice_scheduler_enabled=app.state.store.setting(
-                    "notice_scheduler_enabled", "1"
+                    "notice_scheduler_enabled", "0"
                 )
                 == "1",
+                active_tab=active_tab,
             ),
         )
 
@@ -2111,7 +2607,7 @@ def create_app(
             "notice_scheduler_enabled",
             "1" if notice_scheduler_enabled in {"on", "true", "1"} else "0",
         )
-        return RedirectResponse("/admin/settings?saved=1#general", status_code=303)
+        return RedirectResponse("/admin/settings?saved=1&tab=general", status_code=303)
 
     @app.post("/admin/settings/altegio")
     def save_altegio_settings(
@@ -2127,24 +2623,29 @@ def create_app(
         app.state.store.set_idle_months_threshold(str(threshold))
         selected = valid_period(period) or current_period()
         return RedirectResponse(
-            f"/admin/settings?period={selected}&saved=1#altegio", status_code=303
+            f"/admin/settings?period={selected}&saved=1&tab=altegio", status_code=303
         )
 
     @app.post("/admin/settings/telegram")
     def save_digest_chat(digest_chat: str = Form("")):
         app.state.store.set_digest_chat(digest_chat)
-        return RedirectResponse("/admin/settings?saved=1#telegram", status_code=303)
+        return RedirectResponse("/admin/settings?saved=1&tab=digest", status_code=303)
 
     @app.post("/admin/settings/schedule")
     def save_global_schedule(
         notice_on: list[str] = Form(default=[]),
         notice_key: list[str] = Form(default=[]),
         notice_day: list[str] = Form(default=[]),
+        notice_scheduler_enabled: str = Form(""),
     ):
         app.state.store.set_global_schedule(
             notice_on, dict(zip(notice_key, notice_day))
         )
-        return RedirectResponse("/admin/settings?saved=1#schedule", status_code=303)
+        app.state.store.set_setting(
+            "notice_scheduler_enabled",
+            "1" if notice_scheduler_enabled in {"on", "true", "1"} else "0",
+        )
+        return RedirectResponse("/admin/settings?saved=1&tab=schedule", status_code=303)
 
     @app.post("/admin/rates")
     async def save_fx_rates(request: Request):
@@ -2159,7 +2660,7 @@ def create_app(
             period=period,
         )
         return RedirectResponse(
-            f"/admin/settings?period={period}&saved=1#rates", status_code=303
+            f"/admin/settings?period={period}&saved=1&tab=rates", status_code=303
         )
 
     @app.post("/admin/rates/refresh")
@@ -2167,7 +2668,7 @@ def create_app(
         rates_period = valid_period(period) or current_period()
         app.state.store.fx_snapshot(rates_period, refresh=True)
         return RedirectResponse(
-            f"/admin/settings?period={rates_period}&saved=1#rates", status_code=303
+            f"/admin/settings?period={rates_period}&saved=1&tab=rates", status_code=303
         )
 
     @app.post("/admin/notices")
@@ -2175,14 +2676,26 @@ def create_app(
         language: str = Form("en"),
         notice_key: list[str] = Form(default=[]),
         notice_message: list[str] = Form(default=[]),
+        notice_message_invite_telegram: str = Form(""),
     ):
         if language not in NOTICE_LANGUAGES:
             raise HTTPException(422, "Language not supported")
         app.state.store.set_notice_templates(
             language, dict(zip(notice_key, notice_message))
         )
+        # invite_telegram is stored separately from the partner-notice
+        # template machinery on purpose: the dispatcher reads a per-partner
+        # override from notice_settings.notices, and the global value here
+        # exists only so the admin can edit and preview the wording. An
+        # empty value is preserved verbatim — it is the explicit "use the
+        # i18n default" signal and must not be coerced into a non-empty
+        # placeholder.
+        app.state.store.set_setting(
+            f"notice_text_{language}_invite_telegram",
+            notice_message_invite_telegram.strip(),
+        )
         return RedirectResponse(
-            f"/admin/settings?language={language}&saved=1#notices", status_code=303
+            f"/admin/settings?language={language}&saved=1&tab=notices", status_code=303
         )
 
     @app.get("/admin/partners/{partner_id}/letter/{notice_key}", response_class=HTMLResponse)
@@ -2200,13 +2713,33 @@ def create_app(
     @app.post("/admin/notices/run")
     def run_due_notices():
         send_due_notices(app.state.store)
-        return RedirectResponse("/admin/settings?notice=ran#telegram", status_code=303)
+        return RedirectResponse("/admin/settings?notice=ran&tab=telegram", status_code=303)
 
-    @app.post("/admin/partners/{partner_id}/delete")
-    def delete_partner(partner_id: int):
+    @app.post("/admin/partners/{partner_id}/archive")
+    def archive_partner(partner_id: int):
         if not app.state.store.deactivate_partner(partner_id):
             raise HTTPException(404, "Partner not found")
         return RedirectResponse("/admin/partners", status_code=303)
+
+    @app.post("/admin/partners/{partner_id}/delete")
+    def delete_partner(partner_id: int):
+        """Backward-compatible alias for old forms and bookmarks."""
+        return archive_partner(partner_id)
+
+    @app.post("/admin/partners/{partner_id}/restore")
+    def restore_partner(partner_id: int):
+        if not app.state.store.restore_partner(partner_id):
+            raise HTTPException(404, "Archived partner not found")
+        return RedirectResponse("/admin/partners?view=archived", status_code=303)
+
+    @app.post("/admin/partners/{partner_id}/telegram/unlink")
+    def unlink_telegram(partner_id: int):
+        if not app.state.store.unlink_telegram_chat(partner_id):
+            raise HTTPException(404, "Partner not found or already unlinked")
+        return RedirectResponse(
+            f"/admin/partners/{partner_id}/edit?unlinked=1#contact",
+            status_code=303,
+        )
 
     @app.get("/reports/{report_id}", response_class=HTMLResponse)
     def report_detail(request: Request, report_id: int):
@@ -2230,6 +2763,25 @@ def create_app(
         if report["workflow_status"] == "posted":
             return RedirectResponse(f"/reports/{report_id}", status_code=303)
         app.state.store.approve_report(report_id, approved_by=admin_user)
+        return RedirectResponse(f"/reports/{report_id}", status_code=303)
+
+    @app.post("/reports/{report_id}/unapprove")
+    def unapprove_report(report_id: int):
+        report = app.state.store.report(report_id)
+        if not report:
+            raise HTTPException(404, "Отчёт не найден")
+        if report["workflow_status"] == "posted":
+            # Posted reports need a separate unpost step first.
+            app.state.store.unpost_report(report_id, actor=admin_user)
+        app.state.store.unapprove_report(report_id, actor=admin_user)
+        return RedirectResponse(f"/reports/{report_id}", status_code=303)
+
+    @app.post("/reports/{report_id}/unpost")
+    def unpost_report(report_id: int):
+        report = app.state.store.report(report_id)
+        if not report:
+            raise HTTPException(404, "Отчёт не найден")
+        app.state.store.unpost_report(report_id, actor=admin_user)
         return RedirectResponse(f"/reports/{report_id}", status_code=303)
 
     @app.get("/export/{period}.csv")
@@ -2265,6 +2817,7 @@ def create_app(
                 "Clients",
                 "Risk",
                 "Status",
+                "Status Updated At",
             ]
         )
         for item in items:
@@ -2284,6 +2837,7 @@ def create_app(
                     item["client_count"],
                     item["risk_level"],
                     item["status"],
+                    item.get("status_updated_at") or "",
                 ]
             )
         headers = {

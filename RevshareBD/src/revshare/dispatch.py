@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from revshare.email_letter import SUBJECTS as EMAIL_SUBJECTS
 from revshare.email_letter import build_letter
+from revshare.i18n import translator
 from revshare.mailer import MailError, mail_ready, send_email
 from revshare.notifications import (
     deadline_date,
@@ -12,14 +13,16 @@ from revshare.notifications import (
     reporting_period,
     schedule_for_period,
 )
+from revshare.report_template import build_report_template_xlsx
 from revshare.secrets import telegram_token
 from revshare.timezone import local_today
 from revshare.store import Store
-from revshare.telegram import TelegramError, send_message
+from revshare.telegram import TelegramError, send_document, send_message
 
 
 Sender = Callable[[str, str], None]
 MailSender = Callable[[str, str, str, str], None]
+DocumentSender = Callable[[str, bytes, str, str], None]
 
 DEFAULT_PUBLIC_URL = "http://127.0.0.1:43127"
 
@@ -161,6 +164,124 @@ def partner_letter(
     )
 
 
+def _resolve_invite_text(partner: dict, period: str, deadline_iso: str) -> str:
+    """Pick the text used for a Telegram-channel ``invite`` notice.
+
+    Resolution order:
+      1. Per-partner override stored in
+         ``partner['notice_settings']['notices']`` under
+         ``key == 'invite_telegram'``. Used when present and non-empty
+         (the entry may contain ``{name}``, ``{period}`` and ``{deadline}``
+         placeholders — they are filled via ``format_notice``).
+      2. i18n default ``invite_telegram_default`` (translated with the
+         partner's language, falling back to ``en``). The web-form link is
+         intentionally NOT appended here because Telegram invites always
+         travel with the xlsx template attachment.
+
+    The function never returns the empty string; callers can rely on a
+    non-empty message when the function returns.
+    """
+    settings = partner.get("notice_settings") or {}
+    notices = settings.get("notices") or []
+    for notice in notices:
+        if not isinstance(notice, dict):
+            continue
+        if notice.get("key") != "invite_telegram":
+            continue
+        override = str(notice.get("message") or "").strip()
+        if override:
+            return format_notice(
+                override,
+                name=partner.get("name", ""),
+                period=period,
+                deadline=deadline_iso,
+            )
+    language = str(settings.get("language") or "en")
+    t = translator(language)
+    return t("invite_telegram_default", period=period, deadline=deadline_iso)
+
+
+def attach_invite_template(
+    store: Store,
+    partner: dict,
+    period: str,
+    chat_id: str,
+    bot_token: str | None,
+    document_sender: DocumentSender | None,
+) -> None:
+    """Attach the report template to the first partner invitation.
+
+    Only invoked when ``notice_key == 'invite'`` and the partner is on the
+    Telegram channel. Email notifications never carry the template; partners
+    receive the form URL and can download the template themselves.
+
+    Failures here are logged but never block the notification itself — the
+    text message has already been delivered and a missing attachment is a
+    softer UX problem than a missing reminder.
+    """
+    filename = f"revshare_template_{period}.xlsx"
+    caption = "Шаблон для заполнения"
+    token = bot_token or telegram_token()
+    if not document_sender and not token:
+        # No way to deliver the attachment (e.g. in unit tests without a
+        # bot token). Log a skip and return — the text notice itself is
+        # already on its way via the message sender.
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=None,
+            kind="template_sent",
+            direction="outbound",
+            payload={"period": period, "filename": filename},
+            response={"status": "skipped", "reason": "no_bot_token"},
+            period=period,
+        )
+        return
+    try:
+        notice_settings = partner.get("notice_settings") or {}
+        language = str(notice_settings.get("language") or "ru")
+        document = build_report_template_xlsx(store, partner, period, language=language)
+    except Exception as error:  # noqa: BLE001 - logged and swallowed
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=None,
+            kind="template_sent",
+            direction="outbound",
+            payload={"period": period, "filename": filename},
+            response={"status": "build_error", "error": str(error)[:500]},
+            period=period,
+        )
+        return
+    try:
+        if document_sender:
+            document_sender(str(chat_id), document, filename, caption)
+        else:
+            send_document(token, chat_id, document, filename=filename, caption=caption)
+    except TelegramError as error:
+        store.log_bot_interaction(
+            partner_id=partner["id"],
+            chat_id=str(chat_id),
+            update_id=None,
+            kind="template_sent",
+            direction="outbound",
+            payload={"period": period, "filename": filename},
+            response={"status": "telegram_rejected", "error": str(error)[:500]},
+            period=period,
+        )
+        return
+    store.log_bot_interaction(
+        partner_id=partner["id"],
+        chat_id=str(chat_id),
+        update_id=None,
+        kind="template_sent",
+        direction="outbound",
+        payload={"period": period, "filename": filename, "caption": caption},
+        response={"status": "sent", "file_size": len(document)},
+        period=period,
+    )
+
+
 def send_partner_notice(
     store: Store,
     partner: dict,
@@ -170,6 +291,7 @@ def send_partner_notice(
     sender: Sender | None = None,
     mail_sender: MailSender | None = None,
     bot_token: str | None = None,
+    document_sender: DocumentSender | None = None,
     force: bool = False,
 ) -> dict[str, str]:
     events = {
@@ -205,10 +327,18 @@ def send_partner_notice(
         partner["id"], period, notice_key, force=force
     ):
         return {"status": "skipped", "detail": "already_sent"}
-    text = event["message"].strip()
-    link = form_link(partner["token"], period, store)
-    if link not in text:
-        text = f"{text}\n{link}"
+    if channel == "telegram" and notice_key == "invite":
+        # The Telegram invite uses a separate template (per-partner override
+        # from notice_settings.notices or i18n invite_telegram_default).
+        # It deliberately does NOT carry the web-form link — the xlsx
+        # template attached below already explains the report flow.
+        deadline_iso = deadline_date(partner["notice_settings"], period).isoformat()
+        text = _resolve_invite_text(partner, period, deadline_iso)
+    else:
+        text = event["message"].strip()
+        link = form_link(partner["token"], period, store)
+        if link not in text:
+            text = f"{text}\n{link}"
     if channel == "email":
         letter = partner_letter(
             partner, period, notice_key, message=event["message"], store=store
@@ -241,6 +371,10 @@ def send_partner_notice(
         )
         return {"status": "error", "detail": "telegram_rejected"}
     store.log_notice_send(partner["id"], period, notice_key, "sent", "telegram")
+    if notice_key == "invite":
+        attach_invite_template(
+            store, partner, period, chat_id, bot_token, document_sender
+        )
     return {"status": "sent", "detail": notice_key}
 
 

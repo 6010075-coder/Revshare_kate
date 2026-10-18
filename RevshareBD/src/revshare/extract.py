@@ -12,9 +12,9 @@ from revshare.fx import valid_period
 
 MONEY_RE = re.compile(
     r"(?<![\w.])(?P<amount>"
-    r"\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d{1,2})?"
-    r"|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?"
-    r"|\d+(?:[.,]\d{1,2})?"
+    r"\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d{1,6})?"
+    r"|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,6})?"
+    r"|\d+(?:[.,]\d{1,6})?"
     r")(?![\d\w])"
 )
 CURRENCY_RE = re.compile(r"\b(USD|EUR|AMD|RUB|KZT|AED|TRY|UAH|GBP|PLN|CZK)\b", re.I)
@@ -219,22 +219,57 @@ def _column_total(rows: list[list[str]], hints: tuple[str, ...]) -> float | None
 
 
 def _standard_partner_workbook(
-    path: Path, period: str | None = None
+    path: Path,
+    period: str | None = None,
+    default_currency: str | None = None,
 ) -> ParsedPartnerReport | None:
     """Read the recommended Integration Hub partner report.
 
     Partners fill the input columns; formula cells may have no cached values,
     so totals are calculated here from amount, FX and contractual rate.
+
+    ``default_currency`` is the partner's contractual report currency. It is
+    used as the fallback when no currency hint is found in the header row
+    (the new 9-column template states it in the header block, not in a
+    parenthetical inside a column header).
     """
     if path.suffix.lower() not in {".xlsx", ".xlsm"}:
         return None
     workbook = load_workbook(path, data_only=True, read_only=True)
     wanted = period_sheet_titles(period)
+
+    def _sheet_title_tokens(sheet) -> set[str]:
+        # Use both the full normalised title and its first token so
+        # period-month matches like "Report (EN) — September 2026" still
+        # hit the wanted set ("september 2026") via substring logic.
+        return {token for token in " ".join(sheet.title.split()).casefold().split(" — ")}
+
+    def _is_skip(sheet) -> bool:
+        return any(
+            token in " ".join(sheet.title.split()).casefold()
+            for token in SHEET_SKIP_TOKENS
+        )
+
+    def _matches_period(sheet) -> bool:
+        if not wanted:
+            return True
+        title_norm = " ".join(sheet.title.split()).casefold()
+        # Substring match against any period title token ("september 2026",
+        # "2026-09", etc.) — handles titles like "Report (EN) — September
+        # 2026" that embed the month instead of being exactly it.
+        return any(want in title_norm for want in wanted)
+
     sheets = [
         sheet
         for sheet in workbook.worksheets
-        if not wanted or " ".join(sheet.title.split()).casefold() in wanted
-    ] or list(workbook.worksheets)
+        if _matches_period(sheet) and not _is_skip(sheet)
+    ]
+    if not sheets:
+        # Period filter matched nothing — fall back to any sheet that
+        # doesn't look like a sample. This preserves the old behaviour
+        # for partner-submitted files whose sheet title may not embed
+        # the reporting month.
+        sheets = [sheet for sheet in workbook.worksheets if not _is_skip(sheet)]
     for sheet in sheets:
         rows = _sheet_rows(sheet)
         header_index = None
@@ -248,6 +283,18 @@ def _standard_partner_workbook(
                     columns["application_id"] = column
                 elif _is_application_header(cell):
                     columns["application"] = column
+                if _is_client_header(cell) and "client" not in columns:
+                    columns["client"] = column
+                if (
+                    _is_subscription_period_header(cell)
+                    and "subscription_period" not in columns
+                ):
+                    columns["subscription_period"] = column
+                if (
+                    _is_settlement_currency_header(cell)
+                    and "settlement_currency" not in columns
+                ):
+                    columns["settlement_currency"] = column
                 if (
                     "received by partner" in folded
                     or "получено партнёром" in folded
@@ -275,7 +322,9 @@ def _standard_partner_workbook(
         share = 0.0
         used_rows = 0
         skipped_fx = 0
-        report_currency = "USD"
+        report_currency = (
+            (default_currency or "").upper() if default_currency else "USD"
+        )
         application_groups: dict[str, dict[str, object]] = {}
         header_text = " ".join(rows[header_index])
         report_match = re.search(
@@ -299,13 +348,29 @@ def _standard_partner_workbook(
             location_match = LOCATION_COLUMN_ID_RE.search(location_cell)
             if not location_match:
                 continue
-            location_ids.append(location_match.group(1))
+            current_location = location_match.group(1)
+            location_ids.append(current_location)
             application_ref = ""
             for application_column in ("application_id", "application"):
                 if application_column in columns and columns[application_column] < len(row):
                     application_ref = row[columns[application_column]].strip()
                     if application_ref:
                         break
+            client_name = ""
+            if "client" in columns and columns["client"] < len(row):
+                client_name = row[columns["client"]].strip()
+            subscription_period = ""
+            if (
+                "subscription_period" in columns
+                and columns["subscription_period"] < len(row)
+            ):
+                subscription_period = row[columns["subscription_period"]].strip()
+            settlement_currency = ""
+            if (
+                "settlement_currency" in columns
+                and columns["settlement_currency"] < len(row)
+            ):
+                settlement_currency = row[columns["settlement_currency"]].strip()
             group_key = application_ref or "__unassigned__"
             group = application_groups.setdefault(
                 group_key,
@@ -315,9 +380,10 @@ def _standard_partner_workbook(
                     "reported_share": 0.0,
                     "currency": report_currency,
                     "location_ids": [],
+                    "line_items": [],
                 },
             )
-            group["location_ids"].append(location_match.group(1))
+            group["location_ids"].append(current_location)
             amount_cell = row[columns["amount"]] if columns["amount"] < len(row) else ""
             amount = _signed_value_from_cell(amount_cell)
             if amount is None:
@@ -343,13 +409,31 @@ def _standard_partner_workbook(
             rate = None
             if "rate" in columns and columns["rate"] < len(row):
                 rate = _value_from_cell(row[columns["rate"]])
+            row_share: float | None = None
             if rate is not None:
                 share += converted * rate
+                row_share = round(converted * rate, 2)
             group["turnover"] = round(float(group["turnover"]) + converted, 2)
-            if rate is not None:
+            if row_share is not None:
                 group["reported_share"] = round(
-                    float(group["reported_share"]) + converted * rate, 2
+                    float(group["reported_share"]) + row_share, 2
                 )
+            line_items = group["line_items"]
+            assert isinstance(line_items, list)
+            line_items.append(
+                {
+                    "location_id": current_location,
+                    "client_name": client_name,
+                    "subscription_period": subscription_period,
+                    "payment_currency": payment_currency,
+                    "amount_in_payment_currency": round(amount, 2),
+                    "fx_rate": round(fx, 6),
+                    "settlement_currency": settlement_currency or None,
+                    "amount_in_report_currency": round(converted, 2),
+                    "altegio_rate": rate,
+                    "due_to_altegio": row_share,
+                }
+            )
             used_rows += 1
 
         if not location_ids:
@@ -371,6 +455,24 @@ def _standard_partner_workbook(
                         "location_ids": _unique(group["location_ids"]),
                     }
                 )
+        else:
+            # No application grouping column found — still surface per-row
+            # data so the partner's per-customer line items survive the
+            # round-trip even when only location IDs are available.
+            application_breakdown = [
+                {
+                    "application_ref": "",
+                    "turnover": round(turnover, 2),
+                    "reported_share": round(share, 2) if share else None,
+                    "currency": report_currency,
+                    "location_ids": _unique(location_ids),
+                    "line_items": [
+                        item
+                        for group in application_groups.values()
+                        for item in group["line_items"]
+                    ],
+                }
+            ]
         return ParsedPartnerReport(
             turnover=round(turnover, 2) if used_rows else None,
             currency=report_currency,
@@ -702,7 +804,7 @@ def parse_partner_report(
     default_currency: str | None = None,
     period: str | None = None,
 ) -> ParsedPartnerReport:
-    standard = _standard_partner_workbook(path, period)
+    standard = _standard_partner_workbook(path, period, default_currency=default_currency)
     if standard is not None:
         if standard.reported_share is None and standard.turnover is not None and rate is not None:
             standard.reported_share = round(standard.turnover * rate, 2)
@@ -939,6 +1041,71 @@ LOCATION_ID_RE = re.compile(r"(?<![\d.,])(\d{4,8})(?:-alt)?(?![\d.,])", re.I)
 LOCATION_COLUMN_ID_RE = re.compile(r"(?<![\d.,])(\d{2,12})(?:-alt)?(?![\d.,])", re.I)
 FLOAT_ID_RE = re.compile(r"^\s*(\d+)[.,]0+\s*$")
 
+# Tokens that mark a sheet as a non-data reference (sample/example).
+# The new 9-column template ships a "Пример отчёта" / "Sample report"
+# companion sheet — the parser must skip it so its example rows never
+# leak into reconciliation.
+SHEET_SKIP_TOKENS: tuple[str, ...] = (
+    "пример",
+    "sample",
+    "example",
+)
+
+CLIENT_HEADER_PHRASES = (
+    "client name",
+    "client email",
+    "client name or client email",
+    "client_name",
+    "название клиента",
+    "имя клиента",
+    "email клиента",
+)
+
+SUBSCRIPTION_PERIOD_HEADER_PHRASES = (
+    "subscription period",
+    "paid subscription period",
+    "paid subscription",
+    "subscription_period",
+    "период оплаченной",
+    "период оплаты",
+    "период подписки",
+    "період оплаченої",
+    "період підписки",
+    "okres subskrypcji",
+    "abonnement",
+)
+
+
+def _is_client_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 80:
+        return False
+    return any(phrase in folded for phrase in CLIENT_HEADER_PHRASES)
+
+
+def _is_subscription_period_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 80:
+        return False
+    return any(phrase in folded for phrase in SUBSCRIPTION_PERIOD_HEADER_PHRASES)
+
+
+SETTLEMENT_CURRENCY_HEADER_PHRASES = (
+    "settlement currency",
+    "settlement_currency",
+    "валюта расчёта",
+    "валюта расчета",
+    "валюта розрахунку",
+    "waluta rozliczenia",
+)
+
+
+def _is_settlement_currency_header(cell: str) -> bool:
+    folded = " ".join(cell.split()).casefold().strip(" :#")
+    if not folded or len(folded) > 80:
+        return False
+    return any(phrase in folded for phrase in SETTLEMENT_CURRENCY_HEADER_PHRASES)
+
 
 def _plain_id_cell(cell: str) -> str:
     """Spreadsheets often store Location IDs as floats, so 1295757.0 is one id."""
@@ -1026,12 +1193,29 @@ def _rows_from_file(path: Path, period: str | None = None) -> list[list[str]]:
     if suffix in {".xlsx", ".xlsm"}:
         workbook = load_workbook(path, data_only=True, read_only=True)
         wanted = period_sheet_titles(period)
+
+        def _title_norm(sheet) -> str:
+            return " ".join(sheet.title.split()).casefold()
+
+        def _is_skip(sheet) -> bool:
+            return any(token in _title_norm(sheet) for token in SHEET_SKIP_TOKENS)
+
+        def _matches_period(sheet) -> bool:
+            if not wanted:
+                return True
+            return any(want in _title_norm(sheet) for want in wanted)
+
+        # Prefer sheets that explicitly embed the reporting month.
         if wanted:
             for sheet in workbook.worksheets:
-                if " ".join(sheet.title.split()).casefold() in wanted:
+                if _matches_period(sheet) and not _is_skip(sheet):
                     return _sheet_rows(sheet)
+        # Fall back to any non-sample sheet (e.g. partner uploads that
+        # don't put the month in the sheet title).
         rows: list[list[str]] = []
         for sheet in workbook.worksheets:
+            if _is_skip(sheet):
+                continue
             rows.extend(_sheet_rows(sheet))
         return rows
     if suffix == ".csv":
@@ -1101,6 +1285,249 @@ def _unique(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+
+# --- Manual reconciliation base ------------------------------------------------
+#
+# An admin uploads an Excel/CSV file per month that lists every Location ID the
+# partner app saw, with turnover, currency, and an Active flag. The parser is
+# intentionally tolerant: bad rows are skipped and recorded in ``notes`` so a
+# partially-bad upload never blocks the month-end assess.
+
+_BASE_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "application_id": ("application id", "application", "app id", "app_id"),
+    "location_id": ("location id", "location", "location_id"),
+    "turnover": ("turnover", "revenue", "gmv", "оборот", "выручка"),
+    "currency": ("currency", "валюта"),
+    "active": ("active", "is active", "активен"),
+}
+
+_TRUE_VALUES = {"1", "true", "yes", "y", "да", "так", "on"}
+_FALSE_VALUES = {"0", "false", "no", "n", "нет", "ні", "off", ""}
+
+
+@dataclass
+class BaseRow:
+    application_id: int
+    location_id: str
+    turnover: float
+    currency: str
+    active: bool
+    source_row: int
+
+
+@dataclass
+class ParsedReconciliationBase:
+    rows: list[BaseRow] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+def _base_header_canonical(normalized: str) -> str | None:
+    for canonical, aliases in _BASE_HEADER_ALIASES.items():
+        if normalized in aliases:
+            return canonical
+    return None
+
+
+def _parse_active(raw: str) -> bool | None:
+    folded = raw.strip().casefold()
+    if folded in _TRUE_VALUES:
+        return True
+    if folded in _FALSE_VALUES:
+        return False
+    return None
+
+
+def _parse_application_id(raw: str) -> int | None:
+    folded = raw.strip()
+    if not folded:
+        return None
+    try:
+        return int(folded)
+    except ValueError:
+        try:
+            value = float(folded)
+        except ValueError:
+            return None
+        if value.is_integer():
+            return int(value)
+        return None
+
+
+def _read_base_rows(
+    path: Path, suffix: str
+) -> tuple[list[list[str]] | None, str | None]:
+    """Read the reconciliation base into a list of rows.
+
+    Returns ``(rows, None)`` where ``rows[0]`` is the normalized header, or
+    ``(None, error_message)`` when the file is unreadable or has no header.
+    """
+    if suffix == ".csv":
+        with path.open(newline="", encoding="utf-8", errors="ignore") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames:
+                return None, "CSV file has no header"
+            headers = [
+                " ".join(f.split()).strip() if f else "" for f in reader.fieldnames
+            ]
+            data: list[list[str]] = []
+            for raw in reader:
+                row: list[str] = []
+                for f in reader.fieldnames:
+                    value = raw.get(f, "") if f else ""
+                    row.append("" if value is None else str(value).strip())
+                data.append(row)
+        return [headers, *data], None
+    if suffix == ".xlsx":
+        workbook = load_workbook(path, data_only=True, read_only=True)
+        if not workbook.worksheets:
+            return None, "XLSX file has no sheets"
+        sheet = workbook.worksheets[0]
+        sheet_rows = list(sheet.iter_rows(values_only=True))
+        if not sheet_rows:
+            return None, "XLSX file has no header"
+        headers = [
+            " ".join(str(cell).split()).strip() if cell is not None else ""
+            for cell in sheet_rows[0]
+        ]
+        if not any(headers):
+            return None, "XLSX file has no header"
+        data = []
+        for r in sheet_rows[1:]:
+            row = []
+            for col_idx in range(len(headers)):
+                cell = r[col_idx] if col_idx < len(r) else None
+                row.append("" if cell is None else str(cell).strip())
+            data.append(row)
+        return [headers, *data], None
+    return None, f"unsupported file type: {suffix}"
+
+
+def parse_reconciliation_base(
+    path: Path, *, default_currency: str = "USD"
+) -> ParsedReconciliationBase:
+    """Read the manual reconciliation base an admin uploads per month.
+
+    The file is a one-row-per-(application, location) table that lists every
+    Location ID the partner app saw this month, with turnover, currency, and
+    an Active flag. CSV (``.csv``) and Excel (``.xlsx``) are supported; the
+    parser is tolerant of partial files — bad rows are skipped and recorded
+    in ``notes`` — so the function never raises on a single broken row.
+
+    Required fields per row are ``application_id`` and ``location_id``;
+    ``turnover`` falls back to ``0.0``, ``currency`` to ``default_currency``,
+    and ``active`` to ``False``. ``error`` is set only when the file cannot
+    be opened or has no header at all.
+    """
+    if not path.exists():
+        return ParsedReconciliationBase(
+            rows=[], notes=[], error=f"file not found: {path}"
+        )
+    suffix = path.suffix.lower()
+    try:
+        result, header_error = _read_base_rows(path, suffix)
+    except Exception as exc:  # noqa: BLE001 — intake must not crash the month run
+        return ParsedReconciliationBase(rows=[], notes=[], error=str(exc))
+    if header_error is not None:
+        return ParsedReconciliationBase(rows=[], notes=[], error=header_error)
+    assert result is not None
+    if len(result) < 2:
+        return ParsedReconciliationBase(rows=[], notes=[], error="file has no data rows")
+
+    headers = result[0]
+    data_rows = result[1:]
+
+    canonical_to_index: dict[str, int] = {}
+    for col_idx, header in enumerate(headers):
+        if not header:
+            continue
+        folded = " ".join(header.split()).casefold().strip()
+        canonical = _base_header_canonical(folded)
+        if canonical is not None and canonical not in canonical_to_index:
+            canonical_to_index[canonical] = col_idx
+
+    fallback_currency = (default_currency or "USD").upper()
+    rows: list[BaseRow] = []
+    notes: list[str] = []
+
+    for offset, raw in enumerate(data_rows):
+        source_row = offset + 2  # 1-based, header is row 1
+
+        def _cell(canonical: str) -> str:
+            idx = canonical_to_index.get(canonical)
+            if idx is None or idx >= len(raw):
+                return ""
+            value = raw[idx]
+            return "" if value is None else str(value).strip()
+
+        app_id_raw = _cell("application_id")
+        location_raw = _cell("location_id")
+        turnover_raw = _cell("turnover")
+        currency_raw = _cell("currency")
+        active_raw = _cell("active")
+
+        # Skip rows where every recognised column is empty (separator lines,
+        # trailing blank rows, etc.).
+        if not (
+            app_id_raw
+            or location_raw
+            or turnover_raw
+            or currency_raw
+            or active_raw
+        ):
+            continue
+
+        application_id = _parse_application_id(app_id_raw)
+        if application_id is None:
+            notes.append(
+                f"row {source_row}: missing or invalid Application ID '{app_id_raw}'"
+            )
+            continue
+        if not location_raw:
+            notes.append(f"row {source_row}: missing Location ID")
+            continue
+
+        turnover = 0.0
+        if turnover_raw:
+            parsed_turnover = _parse_amount(turnover_raw)
+            if parsed_turnover is None:
+                notes.append(
+                    f"row {source_row}: cannot parse Turnover '{turnover_raw}'"
+                )
+                continue
+            turnover = parsed_turnover
+
+        if currency_raw:
+            currency = currency_raw.upper()[:3]
+            if len(currency) != 3:
+                currency = fallback_currency
+        else:
+            currency = fallback_currency
+
+        if active_raw:
+            parsed_active = _parse_active(active_raw)
+            if parsed_active is None:
+                notes.append(
+                    f"row {source_row}: cannot parse Active '{active_raw}'"
+                )
+                continue
+            active = parsed_active
+        else:
+            active = False
+
+        rows.append(
+            BaseRow(
+                application_id=application_id,
+                location_id=location_raw,
+                turnover=turnover,
+                currency=currency,
+                active=active,
+                source_row=source_row,
+            )
+        )
+
+    return ParsedReconciliationBase(rows=rows, notes=notes, error=None)
 
 
 def ingest_dir(folder: Path) -> list[ExtractedReport]:

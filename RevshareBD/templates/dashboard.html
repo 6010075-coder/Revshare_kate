@@ -17,6 +17,25 @@
   </form>
 </section>
 
+<section class="section-head base-card {% if base_meta %}base-card--loaded{% else %}base-card--empty{% endif %}">
+  <div>
+    <h2>{{ t("reconciliation_base_card_title") }}</h2>
+    {% if base_meta %}
+    <p class="muted">
+      {{ t("reconciliation_base_summary_loaded",
+           when=base_meta.uploaded_at[:10] if base_meta.uploaded_at else "—",
+           n=base_meta.row_count,
+           by=(t("reconciliation_base_summary_by_suffix", name=base_meta.uploaded_by) if base_meta.uploaded_by else "")) }}
+    </p>
+    {% else %}
+    <p class="muted">{{ t("reconciliation_base_empty") }}</p>
+    {% endif %}
+  </div>
+  <a class="button {% if base_meta %}secondary{% endif %}" href="/admin/reconciliation-base/{{ period }}">
+    {{ t("reconciliation_base_replace") if base_meta else t("reconciliation_base_submit") }}
+  </a>
+</section>
+
 <section class="stats">
   <article class="money">
     <strong>{{ "{:,.2f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>

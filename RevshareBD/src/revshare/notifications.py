@@ -7,7 +7,7 @@ from typing import Any
 from revshare.i18n import SUPPORTED_LANGUAGES
 from revshare.timezone import local_today
 
-NOTICE_KEYS = ("invite", "reminder", "last", "digest", "overdue")
+NOTICE_KEYS = ("invite", "reminder", "last", "digest", "overdue", "invite_telegram")
 PARTNER_NOTICE_KEYS = ("invite", "reminder", "last", "overdue")
 
 
@@ -44,6 +44,11 @@ DEFAULT_DAYS = {
     "last": 5,
     "digest": 6,
     "overdue": 7,
+    # invite_telegram is a channel-specific variant of "invite" and is
+    # never scheduled on its own. The day value is required only to keep
+    # the notice shape stable; schedule_for_period skips it because it is
+    # enabled=False by default.
+    "invite_telegram": 1,
 }
 
 NOTICE_LANGUAGES = SUPPORTED_LANGUAGES
@@ -193,6 +198,13 @@ ALL_DEFAULT_MESSAGES = {
     if message.strip()
 }
 
+# invite_telegram is intentionally empty in every language: the runtime
+# default lives in revshare.i18n (key "invite_telegram_default"). Empty
+# string in normalize_notice_settings means "no per-partner override → fall
+# back to i18n default".
+for _language_messages in DEFAULT_MESSAGES.values():
+    _language_messages.setdefault("invite_telegram", "")
+
 
 def notice_language(value: str | None) -> str:
     return value if value in NOTICE_LANGUAGES else DEFAULT_NOTICE_LANGUAGE
@@ -208,7 +220,7 @@ def default_schedule() -> dict[str, Any]:
         "notices": [
             {
                 "key": key,
-                "enabled": True,
+                "enabled": True if key != "invite_telegram" else False,
                 "day": DEFAULT_DAYS[key],
                 "audience": "internal" if key == "digest" else "partner",
             }
@@ -261,7 +273,7 @@ def default_notice_settings(language: str = DEFAULT_NOTICE_LANGUAGE) -> dict[str
         "notices": [
             {
                 "key": key,
-                "enabled": True,
+                "enabled": True if key != "invite_telegram" else False,
                 "day": DEFAULT_DAYS[key],
                 "audience": "internal" if key == "digest" else "partner",
                 "message": default_message(key, language),

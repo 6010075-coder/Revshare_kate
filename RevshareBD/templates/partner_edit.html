@@ -116,7 +116,17 @@
         <p class="hint">{{ t("telegram_linked") }}</p>
         {% else %}
         <p class="hint">{{ t("telegram_not_linked") }}</p>
-        <a class="button secondary" href="https://t.me/{{ bot_username }}?start={{ partner.token }}" target="_blank" rel="noopener">{{ t("open_bot_link") }}</a>
+        <div class="invite-link-row" data-invite-link-row>
+          <input id="invite-link-{{ partner.id }}" class="invite-link-input" type="text" readonly
+                 value="https://t.me/{{ bot_username }}?start={{ partner.token }}"
+                 data-invite-link-input>
+          <button type="button" class="button secondary"
+                  data-copy-invite-link
+                  data-target="invite-link-{{ partner.id }}"
+                  data-copied-label="{{ t('invite_link_copied') }}">
+            {{ t("copy_invite_link") }}
+          </button>
+        </div>
         {% endif %}
       {% elif partner.report_channel == "email" %}
         <p class="hint">{{ t("email_ready") if mail_ready else t("email_not_ready") }}</p>

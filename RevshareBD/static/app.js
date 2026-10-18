@@ -130,3 +130,34 @@ document.addEventListener("click", (event) => {
   }
   button.closest(".repeat-row").remove();
 });
+
+// Copy partner Telegram invite link to clipboard. We try the async Clipboard
+// API first and fall back to document.execCommand so it still works on older
+// browsers and over plain http (where navigator.clipboard is blocked).
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-copy-invite-link]");
+  if (!button) return;
+  const targetId = button.dataset.target;
+  const input = targetId ? document.getElementById(targetId) : null;
+  if (!input) return;
+  const value = input.value;
+  const restore = button.textContent;
+  const ok = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        input.select();
+        input.setSelectionRange(0, value.length);
+        if (!document.execCommand("copy")) throw new Error("execCommand failed");
+      }
+      button.textContent = button.dataset.copiedLabel || "Copied";
+    } catch (error) {
+      console.error("Failed to copy invite link", error);
+      button.textContent = "Copy failed";
+    } finally {
+      window.setTimeout(() => { button.textContent = restore; }, 1800);
+    }
+  };
+  await ok();
+});

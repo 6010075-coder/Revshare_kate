@@ -13,16 +13,16 @@
 
 {% if saved %}<div class="notice neutral">{{ t("settings_saved") }}</div>{% endif %}
 
-<nav class="settings-nav">
-  <a href="#general">{{ t("settings_general") }}</a>
-  <a href="#altegio">{{ t("altegio_data") }}</a>
-  <a href="#telegram">{{ t("telegram_delivery") }}</a>
-  <a href="#schedule">{{ t("notice_schedule") }}</a>
-  <a href="#notices">{{ t("notice_texts") }}</a>
-  <a href="#rates">{{ t("usd_rates") }}</a>
+<nav class="tabs" data-tabs>
+  <button type="button" class="{{ 'active' if active_tab == 'general' else '' }}" data-tab="general">{{ t("settings_general") }}</button>
+  <button type="button" class="{{ 'active' if active_tab == 'altegio' else '' }}" data-tab="altegio">{{ t("altegio_data") }}</button>
+  <button type="button" class="{{ 'active' if active_tab == 'telegram' else '' }}" data-tab="telegram">{{ t("telegram_delivery") }}</button>
+  <button type="button" class="{{ 'active' if active_tab == 'schedule' else '' }}" data-tab="schedule">{{ t("notice_schedule") }}</button>
+  <button type="button" class="{{ 'active' if active_tab == 'notices' else '' }}" data-tab="notices">{{ t("notice_texts") }}</button>
+  <button type="button" class="{{ 'active' if active_tab == 'rates' else '' }}" data-tab="rates">{{ t("usd_rates") }}</button>
 </nav>
 
-<form method="post" action="/admin/settings/general" class="card wide-form" id="general">
+<form method="post" action="/admin/settings/general" class="card wide-form tab-panel {{ 'active' if active_tab == 'general' else '' }}" data-panel="general">
 {{ csrf_field(csrf_token) }}
   <h2>{{ t("settings_general") }}</h2>
   <p class="hint">{{ t("settings_general_hint") }}</p>
@@ -41,7 +41,7 @@
   </div>
 </form>
 
-<section class="card wide-form" id="altegio">
+<section class="card wide-form tab-panel {{ 'active' if active_tab == 'altegio' else '' }}" data-panel="altegio">
   <h2>{{ t("altegio_data") }}</h2>
   <p class="hint">{{ t("settings_altegio_intro") }}</p>
   <p class="hint">{{ t("timezone_note") }}</p>
@@ -107,7 +107,7 @@
   </form>
 </section>
 
-<section class="card wide-form" id="telegram">
+<section class="card wide-form tab-panel {{ 'active' if active_tab == 'telegram' else '' }}" data-panel="telegram">
   <h2>{{ t("telegram_delivery") }}</h2>
   {% if bot_ready %}
   <p class="hint">{{ t("telegram_delivery_intro") }}</p>
@@ -143,7 +143,7 @@
   {% endif %}
 </section>
 
-<form method="post" action="/admin/settings/schedule" class="card wide-form" id="schedule">
+<form method="post" action="/admin/settings/schedule" class="card wide-form tab-panel {{ 'active' if active_tab == 'schedule' else '' }}" data-panel="schedule">
 {{ csrf_field(csrf_token) }}
   <h2>{{ t("notice_schedule") }}</h2>
   <p class="hint">{{ t("notice_schedule_intro") }}</p>
@@ -176,7 +176,7 @@
   </div>
 </form>
 
-<form method="post" action="/admin/notices" class="card wide-form" id="notices">
+<form method="post" action="/admin/notices" class="card wide-form tab-panel {{ 'active' if active_tab == 'notices' else '' }}" data-panel="notices">
 {{ csrf_field(csrf_token) }}
   <h2>{{ t("notice_texts") }}</h2>
   <p class="hint">{{ t("notice_texts_intro") }}</p>
@@ -185,7 +185,7 @@
     <label class="sr-only" for="notice-language">{{ t("notice_language") }}</label>
     <select id="notice-language" data-jump>
       {% for code in notice_languages %}
-      <option value="/admin/settings?language={{ code }}#notices" {% if code == language %}selected{% endif %}>{{ t("language_" + code) }}</option>
+      <option value="/admin/settings?tab=notices&language={{ code }}" {% if code == language %}selected{% endif %}">{{ t("language_" + code) }}</option>
       {% endfor %}
     </select>
   </div>
@@ -210,7 +210,7 @@
 <form id="fx-period-form" method="get" action="/admin/settings" hidden>
   <input type="hidden" name="language" value="{{ language }}">
 </form>
-<form method="post" action="/admin/rates" class="card wide-form rates-form" id="rates">
+<form method="post" action="/admin/rates" class="card wide-form rates-form tab-panel {{ 'active' if active_tab == 'rates' else '' }}" data-panel="rates">
 {{ csrf_field(csrf_token) }}
   <h2>{{ t("usd_rates") }}</h2>
   <p class="hint">{{ t("usd_rates_hint") }}</p>

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from revshare.countries import canonical_app_category
+from revshare.extract import BaseRow
 from revshare.fx import DEFAULT_USD_RATES, SUPPORTED_CURRENCIES, to_usd, valid_period
 from revshare.timezone import local_today
 from revshare.notifications import (
@@ -192,6 +193,31 @@ def normalize_application_links(
     return links
 
 
+def _flatten_line_items(
+    application_breakdown: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    """Return the flat list of per-row line items across all groups.
+
+    The parser stores line items nested inside each application_breakdown
+    group (``group["line_items"]``); for SQL access we also persist them
+    at the top level of ``report_versions.line_items`` so reviewers can
+    see individual customer details without parsing the breakdown JSON.
+    """
+    if not application_breakdown:
+        return []
+    flat: list[dict[str, object]] = []
+    for group in application_breakdown:
+        if not isinstance(group, dict):
+            continue
+        items = group.get("line_items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                flat.append(item)
+    return flat
+
+
 def assess(
     reported_ids: list[str],
     connected_ids: set[str],
@@ -301,6 +327,144 @@ def report_display_status(item: dict) -> str:
     return "attention"
 
 
+def _reports_unique_includes_application_id(db) -> bool:
+    """Check whether the reports table already has application_id in its UNIQUE index."""
+    rows = db.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'reports'"
+    ).fetchall()
+    for row in rows:
+        sql = (row["sql"] or "").upper()
+        if "APPLICATION_ID" in sql and "PARTNER_ID" in sql and "PERIOD" in sql:
+            return True
+    return False
+
+
+def _migrate_invite_telegram_key(db) -> None:
+    """Ensure every partner's notice_settings has an ``invite_telegram`` entry.
+
+    The Telegram invite has its own template key so the dispatch logic can
+    resolve it independently from the email ``invite``. Existing partners
+    stored before this key was introduced do not have an entry, so the
+    dispatcher would always fall back to the i18n default. The migration
+    backfills an empty ``message`` for every active and archived partner;
+    an empty value means "use the i18n default" and is the explicit signal
+    that the partner has not opted into a custom Telegram wording.
+
+    The migration is idempotent: partners that already have the entry are
+    left untouched. Stored data outside ``notice_settings.notices`` is
+    preserved verbatim.
+    """
+    from revshare.notifications import default_schedule
+
+    schedule_stub = default_schedule()
+    default_invite_telegram = next(
+        item for item in schedule_stub["notices"] if item["key"] == "invite_telegram"
+    )
+    rows = db.execute("SELECT id, notifications FROM partners").fetchall()
+    for row in rows:
+        raw = row["notifications"] or "{}"
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {}
+        notices = parsed.get("notices") if isinstance(parsed, dict) else None
+        if not isinstance(notices, list):
+            notices = []
+        if any(
+            isinstance(item, dict) and item.get("key") == "invite_telegram"
+            for item in notices
+        ):
+            continue
+        notices.append(
+            {
+                "key": "invite_telegram",
+                "enabled": default_invite_telegram["enabled"],
+                "day": default_invite_telegram["day"],
+                "audience": default_invite_telegram["audience"],
+                "message": "",
+            }
+        )
+        if isinstance(parsed, dict):
+            parsed["notices"] = notices
+            updated = json.dumps(parsed, ensure_ascii=False)
+        else:
+            updated = json.dumps(
+                {"language": "en", "notices": notices}, ensure_ascii=False
+            )
+        db.execute(
+            "UPDATE partners SET notifications = ? WHERE id = ?",
+            (updated, row["id"]),
+        )
+
+
+def _migrate_reports_unique_with_application_id(db) -> None:
+    """Recreate the reports table with UNIQUE(partner_id, period, application_id).
+
+    Safe migration:
+      1. Build reports_new with the new schema.
+      2. Copy rows verbatim.
+      3. Drop old table, rename new, recreate indexes.
+    """
+    db.execute("PRAGMA foreign_keys = OFF")
+    try:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                partner_id INTEGER NOT NULL,
+                period TEXT NOT NULL,
+                application_id INTEGER,
+                turnover REAL NOT NULL,
+                currency TEXT NOT NULL,
+                reported_share REAL,
+                client_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                risk_score INTEGER NOT NULL,
+                reasons TEXT NOT NULL,
+                missing_active TEXT NOT NULL,
+                unknown_locations TEXT NOT NULL,
+                comment TEXT NOT NULL DEFAULT '',
+                attachment TEXT,
+                report_source TEXT NOT NULL DEFAULT 'partner_file',
+                submitted_at TEXT NOT NULL,
+                workflow_status TEXT NOT NULL DEFAULT 'auto_checked',
+                approved_at TEXT,
+                approved_by TEXT,
+                posted_at TEXT,
+                contract_rate REAL,
+                application_breakdown TEXT NOT NULL DEFAULT '[]',
+                status_updated_at TEXT,
+                UNIQUE(partner_id, period, application_id)
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO reports_new (
+                id, partner_id, period, application_id, turnover, currency,
+                reported_share, client_count, status, risk_level, risk_score,
+                reasons, missing_active, unknown_locations, comment, attachment,
+                report_source, submitted_at, workflow_status, approved_at,
+                approved_by, posted_at, contract_rate, application_breakdown,
+                status_updated_at
+            )
+            SELECT
+                id, partner_id, period, application_id, turnover, currency,
+                reported_share, client_count, status, risk_level, risk_score,
+                reasons, missing_active, unknown_locations, comment, attachment,
+                report_source, submitted_at, workflow_status, approved_at,
+                approved_by, posted_at, contract_rate, application_breakdown,
+                status_updated_at
+            FROM reports
+            """
+        )
+        db.execute("DROP TABLE reports")
+        db.execute("ALTER TABLE reports_new RENAME TO reports")
+    finally:
+        db.execute("PRAGMA foreign_keys = ON")
+
+
 class Store:
     def __init__(
         self,
@@ -343,7 +507,8 @@ class Store:
                     rate REAL,
                     currency TEXT NOT NULL DEFAULT 'USD',
                     active INTEGER NOT NULL DEFAULT 1,
-                    notifications TEXT NOT NULL DEFAULT '{}'
+                    notifications TEXT NOT NULL DEFAULT '{}',
+                    report_automation_status TEXT NOT NULL DEFAULT 'manual'
                 );
                 CREATE TABLE IF NOT EXISTS usage_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,6 +581,7 @@ class Store:
                     location_ids TEXT NOT NULL,
                     extraction_notes TEXT NOT NULL,
                     application_breakdown TEXT NOT NULL DEFAULT '[]',
+                    application_id INTEGER,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS report_claims (
@@ -472,6 +638,16 @@ class Store:
                 db.execute("ALTER TABLE reports ADD COLUMN approved_by TEXT")
             if "posted_at" not in report_columns:
                 db.execute("ALTER TABLE reports ADD COLUMN posted_at TEXT")
+            if "status_updated_at" not in report_columns:
+                db.execute("ALTER TABLE reports ADD COLUMN status_updated_at TEXT")
+                # Backfill: existing rows use submitted_at as their first status timestamp.
+                db.execute(
+                    """
+                    UPDATE reports
+                    SET status_updated_at = submitted_at
+                    WHERE status_updated_at IS NULL OR status_updated_at = ''
+                    """
+                )
             if "contract_rate" not in report_columns:
                 db.execute("ALTER TABLE reports ADD COLUMN contract_rate REAL")
                 db.execute(
@@ -492,6 +668,51 @@ class Store:
                 db.execute(
                     "ALTER TABLE reports ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "application_id" not in report_columns:
+                db.execute(
+                    "ALTER TABLE reports ADD COLUMN application_id INTEGER"
+                )
+            # Migrate UNIQUE(partner_id, period) → UNIQUE(partner_id, period, application_id)
+            if not _reports_unique_includes_application_id(db):
+                _migrate_reports_unique_with_application_id(db)
+            # Backfill invite_telegram entry for every partner's notice_settings.
+            # Idempotent: partners that already have the entry are skipped.
+            _migrate_invite_telegram_key(db)
+            if "application_id" not in {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(report_drafts)").fetchall()
+            }:
+                db.execute(
+                    "ALTER TABLE report_drafts ADD COLUMN application_id INTEGER"
+                )
+            # Partial unique index: only one draft per (partner, period, application_id)
+            # when application_id is set. NULLs are not constrained (per SQLite design)
+            # so partners without an explicit application can still keep one draft.
+            db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uniq_draft_partner_period_app
+                ON report_drafts (partner_id, period, application_id)
+                WHERE application_id IS NOT NULL
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_interactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id INTEGER,
+                    chat_id TEXT,
+                    update_id INTEGER,
+                    kind TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '',
+                    response TEXT NOT NULL DEFAULT '',
+                    report_id INTEGER,
+                    draft_id INTEGER,
+                    period TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             draft_columns = {
                 row["name"]
                 for row in db.execute("PRAGMA table_info(report_drafts)").fetchall()
@@ -503,6 +724,10 @@ class Store:
             if "application_breakdown" not in version_columns:
                 db.execute(
                     "ALTER TABLE report_versions ADD COLUMN application_breakdown TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "line_items" not in version_columns:
+                db.execute(
+                    "ALTER TABLE report_versions ADD COLUMN line_items TEXT NOT NULL DEFAULT '[]'"
                 )
             if "missing_active" not in version_columns:
                 db.execute(
@@ -575,6 +800,10 @@ class Store:
                 db.execute(
                     "ALTER TABLE partners ADD COLUMN internal_comment TEXT NOT NULL DEFAULT ''"
                 )
+            if "report_automation_status" not in partner_columns:
+                db.execute(
+                    "ALTER TABLE partners ADD COLUMN report_automation_status TEXT NOT NULL DEFAULT 'manual'"
+                )
             legacy_application_categories = db.execute(
                 """
                 SELECT a.id, p.category
@@ -637,6 +866,40 @@ class Store:
                     sheet_cell TEXT NOT NULL DEFAULT '',
                     posted_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS reconciliation_bases (
+                    period TEXT PRIMARY KEY,
+                    uploaded_at TEXT NOT NULL,
+                    uploaded_by TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL DEFAULT '',
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS reconciliation_base_rows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT NOT NULL,
+                    application_id INTEGER NOT NULL,
+                    location_id TEXT NOT NULL,
+                    turnover REAL NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    active INTEGER NOT NULL DEFAULT 0,
+                    source_row INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(period, application_id, location_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_base_rows_period
+                    ON reconciliation_base_rows(period);
+                CREATE TABLE IF NOT EXISTS revalidation_tasks (
+                    id TEXT PRIMARY KEY,
+                    period TEXT NOT NULL,
+                    total INTEGER NOT NULL DEFAULT 0,
+                    processed INTEGER NOT NULL DEFAULT 0,
+                    current_report TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    started_at TEXT NOT NULL DEFAULT '',
+                    finished_at TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_revalidation_tasks_period_status
+                    ON revalidation_tasks(period, status);
                 """
             )
             usage_columns = {
@@ -710,10 +973,31 @@ class Store:
             ).fetchone()
         return self._with_notifications(row)
 
+    def partner_by_chat_id(self, chat_id: str) -> sqlite3.Row | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM partners WHERE telegram_chat_id = ? AND active = 1",
+                (str(chat_id),),
+            ).fetchone()
+        return self._with_notifications(row)
+
     def partners(self) -> list[dict]:
         with self.connect() as db:
             rows = list(db.execute("SELECT * FROM partners WHERE active = 1 ORDER BY name"))
         return [self._with_notifications(row) for row in rows]
+
+    def archived_partners(self) -> list[dict]:
+        with self.connect() as db:
+            rows = list(db.execute("SELECT * FROM partners WHERE active = 0 ORDER BY name"))
+        return [self._with_notifications(row) for row in rows]
+
+    def restore_partner(self, partner_id: int) -> bool:
+        with self.connect() as db:
+            result = db.execute(
+                "UPDATE partners SET active = 1 WHERE id = ? AND active = 0",
+                (partner_id,),
+            )
+        return result.rowcount > 0
 
     def _with_notifications(self, row: sqlite3.Row | None) -> dict | None:
         if row is None:
@@ -1026,6 +1310,7 @@ class Store:
         notice_settings: dict | None = None,
         category: str = "",
         internal_comment: str = "",
+        report_automation_status: str = "manual",
     ) -> int:
         settings = json.dumps(
             normalize_notice_settings(
@@ -1039,8 +1324,9 @@ class Store:
                 INSERT INTO partners
                 (name, legal_name, legal_country, altegio_legal_entity,
                 contact_name, email, telegram, report_channel, token, rate,
-                currency, notifications, category, internal_comment)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                currency, notifications, category, internal_comment,
+                report_automation_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -1057,6 +1343,7 @@ class Store:
                     settings,
                     category,
                     internal_comment,
+                    report_automation_status,
                 ),
             )
         return int(cursor.lastrowid)
@@ -1077,6 +1364,7 @@ class Store:
         notice_settings: dict | None = None,
         category: str = "",
         internal_comment: str = "",
+        report_automation_status: str | None = None,
     ) -> None:
         assignments = """
                     name = ?,
@@ -1106,6 +1394,9 @@ class Store:
             category,
             internal_comment,
         ]
+        if report_automation_status is not None:
+            assignments += ",\n                    report_automation_status = ?"
+            values.append(report_automation_status)
         if notice_settings is not None:
             assignments += ",\n                    notifications = ?"
             values.append(
@@ -1531,6 +1822,52 @@ class Store:
         if not report or report["report_source"] == "manual":
             return
         report_id = report["id"]
+        # Step 3: if no reconciliation base has been uploaded for this period
+        # yet, park the report in ``pending_base`` with empty assessment
+        # fields — mirrors ``submit_report`` so the partner sees the same
+        # "waiting for base" branch whether the report was just created or
+        # is being recomputed by the revalidation worker.
+        base_rows = db.execute(
+            """
+            SELECT location_id, active FROM reconciliation_base_rows
+            WHERE period = ? ORDER BY location_id
+            """,
+            (period,),
+        ).fetchall()
+        base_meta = db.execute(
+            "SELECT 1 FROM reconciliation_bases WHERE period = ?",
+            (period,),
+        ).fetchone()
+        if not base_meta or not base_rows:
+            now = datetime.now(UTC).isoformat()
+            db.execute(
+                """
+                UPDATE reports
+                SET status = 'pending_base',
+                    risk_level = 'green',
+                    risk_score = 0,
+                    reasons = '[]',
+                    missing_active = '[]',
+                    unknown_locations = '[]',
+                    approved_at = NULL, approved_by = NULL,
+                    workflow_status = CASE
+                        WHEN workflow_status = 'approved' THEN 'approved'
+                        ELSE 'needs_review'
+                    END,
+                    status_updated_at = ?
+                WHERE id = ?
+                """,
+                (now, report_id),
+            )
+            if report["workflow_status"] not in ("needs_review", "approved"):
+                self._log_report_event(
+                    db,
+                    report_id,
+                    "needs_review",
+                    "snapshot_recheck",
+                    actor="system",
+                )
+            return
         location_ids = [
             row["location_id"]
             for row in db.execute(
@@ -1538,22 +1875,26 @@ class Store:
                 (report_id,),
             )
         ]
-        rows = db.execute(
+        connected = {row["location_id"] for row in base_rows}
+        active = {row["location_id"] for row in base_rows if int(row["active"])}
+        # ``evidence`` below still keys off ``usage_snapshots`` because the
+        # ``verify_claim`` helper only needs the per-location booleans —
+        # the base rows tell us which ids are connected/active and the
+        # snapshot rows still hold the had_payment flag.
+        snapshot_rows = db.execute(
             """
             SELECT location_id, is_connected, is_active, had_payment
             FROM usage_snapshots WHERE partner_id = ? AND period = ?
             """,
             (partner_id, period),
         ).fetchall()
-        connected = {row["location_id"] for row in rows if row["is_connected"]}
-        active = {row["location_id"] for row in rows if row["is_active"]}
         evidence = {
             row["location_id"]: {
                 "is_connected": bool(row["is_connected"]),
                 "is_active": bool(row["is_active"]),
                 "had_payment": bool(row["had_payment"]),
             }
-            for row in rows
+            for row in snapshot_rows
         }
         previous = db.execute(
             """
@@ -1574,6 +1915,7 @@ class Store:
             previous_client_count=previous["client_count"] if previous else None,
         )
         status = "requires_review" if review.level != "green" else "verified"
+        now = datetime.now(UTC).isoformat()
         db.execute(
             """
             UPDATE reports
@@ -1590,7 +1932,8 @@ class Store:
                 approved_by = CASE
                     WHEN ? = 'requires_review' THEN NULL
                     ELSE approved_by
-                END
+                END,
+                status_updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1603,6 +1946,7 @@ class Store:
                 status,
                 status,
                 status,
+                now,
                 report_id,
             ),
         )
@@ -1732,13 +2076,15 @@ class Store:
                 UPDATE reports
                 SET status = 'requires_review', workflow_status = 'needs_review',
                     risk_level = ?, risk_score = ?, reasons = ?,
-                    approved_at = NULL, approved_by = NULL
+                    approved_at = NULL, approved_by = NULL,
+                    status_updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     level,
                     score,
                     json.dumps(reasons, ensure_ascii=False),
+                    datetime.now(UTC).isoformat(),
                     report["id"],
                 ),
             )
@@ -1839,12 +2185,174 @@ class Store:
         )
         return result
 
+    def report_draft_by_id(self, draft_id: int) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM report_drafts WHERE id = ?", (draft_id,)
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["location_ids"] = json.loads(result["location_ids"])
+        result["extraction_notes"] = json.loads(result["extraction_notes"])
+        result["application_breakdown"] = json.loads(
+            result.get("application_breakdown") or "[]"
+        )
+        return result
+
     def delete_report_draft(self, token: str, partner_id: int) -> None:
         with self.connect() as db:
             db.execute(
                 "DELETE FROM report_drafts WHERE token = ? AND partner_id = ?",
                 (token, partner_id),
             )
+
+    # ---- Bot helpers ----
+
+    def save_bot_draft(
+        self,
+        partner_id: int,
+        period: str,
+        application_id: int | None,
+        attachment: str,
+        turnover: float | None,
+        currency: str,
+        reported_share: float | None,
+        location_ids: list[str],
+        extraction_notes: list[str],
+        application_breakdown: list[dict[str, object]],
+    ) -> int:
+        """Insert or replace a draft created from a Telegram bot submission."""
+        import secrets as _secrets
+
+        with self.connect() as db:
+            if application_id is None:
+                db.execute(
+                    "DELETE FROM report_drafts WHERE partner_id = ? AND period = ? AND application_id IS NULL",
+                    (partner_id, period),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM report_drafts WHERE partner_id = ? AND period = ? AND application_id = ?",
+                    (partner_id, period, application_id),
+                )
+            token = _secrets.token_urlsafe(24)
+            db.execute(
+                """
+                INSERT INTO report_drafts (
+                    token, partner_id, period, attachment, turnover,
+                    currency, reported_share, location_ids, extraction_notes,
+                    application_breakdown, application_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    partner_id,
+                    period,
+                    attachment,
+                    turnover,
+                    currency,
+                    reported_share,
+                    json.dumps(location_ids),
+                    json.dumps(extraction_notes),
+                    json.dumps(application_breakdown),
+                    application_id,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            row = db.execute(
+                "SELECT id FROM report_drafts WHERE token = ?", (token,)
+            ).fetchone()
+        return int(row[0])
+
+    def drafts_for_partner(self, partner_id: int) -> list[dict]:
+        """Return all bot-created drafts for a partner, newest first.
+
+        Used by the admin profile page so admins can review and delete
+        drafts that the partner has not yet confirmed.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, period, application_id, attachment, turnover,
+                       currency, reported_share, created_at
+                FROM report_drafts
+                WHERE partner_id = ?
+                ORDER BY datetime(created_at) DESC, id DESC
+                """,
+                (partner_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_draft(self, draft_id: int, partner_id: int) -> bool:
+        """Hard-delete a draft owned by the given partner.
+
+        Returns True if a row was removed, False if the draft did not
+        exist or belonged to a different partner. The partner_id check
+        prevents an admin from deleting another partner's draft by
+        guessing draft ids.
+        """
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM report_drafts WHERE id = ? AND partner_id = ?",
+                (draft_id, partner_id),
+            )
+        return cursor.rowcount > 0
+
+    def log_bot_interaction(
+        self,
+        partner_id: int | None,
+        chat_id: str | None,
+        update_id: int | None,
+        kind: str,
+        direction: str,
+        payload: dict[str, object] | None = None,
+        response: dict[str, object] | None = None,
+        report_id: int | None = None,
+        draft_id: int | None = None,
+        period: str | None = None,
+    ) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO bot_interactions (
+                    partner_id, chat_id, update_id, kind, direction,
+                    payload, response, report_id, draft_id, period, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    partner_id,
+                    chat_id,
+                    update_id,
+                    kind,
+                    direction,
+                    json.dumps(payload or {}),
+                    json.dumps(response or {}),
+                    report_id,
+                    draft_id,
+                    period,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def recent_resend_count(self, partner_id: int, period: str) -> int:
+        """Count resend events in the current calendar day (UTC) for a partner/period."""
+        from datetime import datetime, time
+
+        start_of_day = datetime.combine(datetime.now(UTC).date(), time.min).isoformat()
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT COUNT(*) FROM bot_interactions
+                WHERE partner_id = ?
+                  AND period = ?
+                  AND kind = 'resend'
+                  AND created_at >= ?
+                """,
+                (partner_id, period, start_of_day),
+            ).fetchone()
+        return int(row[0])
 
     def submit_report(
         self,
@@ -1859,8 +2367,23 @@ class Store:
         claims: list[dict[str, str]] | None = None,
         application_breakdown: list[dict[str, object]] | None = None,
         report_source: str = "partner_file",
+        application_id: int | None = None,
     ) -> tuple[int, Review]:
-        connected, active = self.usage(partner_id, period)
+        # Step 3: prefer the new reconciliation base over the legacy Altegio
+        # BI snapshot. The base is the authoritative source for ``connected``
+        # and ``active`` ids as of this step. If no base has been uploaded
+        # yet for the period, fall back to the legacy ``usage_snapshots``
+        # reads (kept read-only until step 4 turns the sync into a no-op).
+        base_rows = self.get_reconciliation_base_rows(period)
+        base_meta = self.get_reconciliation_base(period)
+        base_available = bool(base_meta and base_rows)
+        if base_available:
+            connected = {str(row["location_id"]) for row in base_rows}
+            active = {
+                str(row["location_id"]) for row in base_rows if int(row["active"])
+            }
+        else:
+            connected, active = self.usage(partner_id, period)
         with self.connect() as db:
             partner = db.execute(
                 "SELECT rate FROM partners WHERE id = ?", (partner_id,)
@@ -1881,6 +2404,21 @@ class Store:
                 connected=len(connected),
                 active=len(active),
                 reported=0,
+                missing_active=[],
+                unknown=[],
+            )
+        elif not base_available:
+            # Step 3: no reconciliation base for the period → save the
+            # report in the ``pending_base`` state with empty assessment
+            # fields. The partner sees the "waiting for base" branch on the
+            # review screen and the admin gets the same on ``/reports/{id}``.
+            review = Review(
+                level="green",
+                score=0,
+                reasons=[],
+                connected=len(connected),
+                active=len(active),
+                reported=len(set(location_ids)),
                 missing_active=[],
                 unknown=[],
             )
@@ -1905,15 +2443,22 @@ class Store:
             review.score = max(review.score, 1)
             if review.level == "green":
                 review.level = "yellow"
-        status = "requires_review" if review.level != "green" else "verified"
-        workflow_status = "needs_review" if review.level != "green" else "auto_checked"
+        # Step 3: ``pending_base`` status overrides the usual
+        # ``requires_review``/``verified`` split — the report is parked
+        # waiting for the base to arrive.
+        if report_source != "manual" and not base_available:
+            status = "pending_base"
+            workflow_status = "needs_review"
+        else:
+            status = "requires_review" if review.level != "green" else "verified"
+            workflow_status = "needs_review" if review.level != "green" else "auto_checked"
         now = datetime.now(UTC).isoformat()
         with self.connect() as db:
             existing = db.execute(
-                "SELECT id FROM reports WHERE partner_id = ? AND period = ?",
+                "SELECT id, application_id FROM reports WHERE partner_id = ? AND period = ?",
                 (partner_id, period),
             ).fetchone()
-            if existing:
+            if existing and existing["application_id"] == application_id:
                 report_id = existing["id"]
                 db.execute("DELETE FROM report_clients WHERE report_id = ?", (report_id,))
                 db.execute(
@@ -1923,7 +2468,7 @@ class Store:
                     reasons = ?, missing_active = ?, unknown_locations = ?,
                     comment = ?, attachment = ?, report_source = ?, submitted_at = ?,
                     workflow_status = ?, application_breakdown = ?,
-                    approved_at = NULL, approved_by = NULL
+                    approved_at = NULL, approved_by = NULL, status_updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -1944,22 +2489,26 @@ class Store:
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
+                        now,
                         report_id,
                     ),
                 )
-            else:
+            elif existing:
+                # Different application_id for the same (partner, period):
+                # the original UNIQUE(partner_id, period, application_id) — keep both rows.
                 cursor = db.execute(
                     """
                     INSERT INTO reports
-                    (partner_id, period, turnover, currency, reported_share, contract_rate,
+                    (partner_id, period, application_id, turnover, currency, reported_share, contract_rate,
                     client_count, status, risk_level, risk_score, reasons,
                     missing_active, unknown_locations, comment, attachment, report_source, submitted_at,
-                    workflow_status, application_breakdown)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    workflow_status, application_breakdown, status_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         partner_id,
                         period,
+                        application_id,
                         turnover,
                         currency,
                         reported_share,
@@ -1977,6 +2526,42 @@ class Store:
                         now,
                         workflow_status,
                         json.dumps(application_breakdown or [], ensure_ascii=False),
+                        now,
+                    ),
+                )
+                report_id = cursor.lastrowid
+            else:
+                cursor = db.execute(
+                    """
+                    INSERT INTO reports
+                    (partner_id, period, application_id, turnover, currency, reported_share, contract_rate,
+                    client_count, status, risk_level, risk_score, reasons,
+                    missing_active, unknown_locations, comment, attachment, report_source, submitted_at,
+                    workflow_status, application_breakdown, status_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        partner_id,
+                        period,
+                        application_id,
+                        turnover,
+                        currency,
+                        reported_share,
+                        partner["rate"] if partner else None,
+                        len(set(location_ids)),
+                        status,
+                        review.level,
+                        review.score,
+                        json.dumps(review.reasons, ensure_ascii=False),
+                        json.dumps(review.missing_active),
+                        json.dumps(review.unknown),
+                        comment,
+                        attachment,
+                        report_source,
+                        now,
+                        workflow_status,
+                        json.dumps(application_breakdown or [], ensure_ascii=False),
+                        now,
                     ),
                 )
                 report_id = cursor.lastrowid
@@ -2029,8 +2614,8 @@ class Store:
                 (report_id, version, turnover, currency, reported_share, contract_rate,
                 client_count, status, risk_level, risk_score, reasons,
                 missing_active, unknown_locations, claims, comment, attachment,
-                submitted_at, application_breakdown)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                submitted_at, application_breakdown, line_items)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -2051,6 +2636,7 @@ class Store:
                     attachment,
                     now,
                     json.dumps(application_breakdown or [], ensure_ascii=False),
+                    json.dumps(_flatten_line_items(application_breakdown), ensure_ascii=False),
                 ),
             )
             self._log_report_event(
@@ -2133,7 +2719,8 @@ class Store:
                 """
                 SELECT p.*, r.id AS report_id, r.turnover, r.currency AS report_currency,
                 r.reported_share, r.contract_rate, r.client_count, r.status, r.risk_level,
-                r.risk_score, r.reasons, r.submitted_at, r.workflow_status, r.report_source
+                r.risk_score, r.reasons, r.submitted_at, r.workflow_status, r.report_source,
+                r.status_updated_at
                 FROM partners p
                 LEFT JOIN reports r ON r.partner_id = p.id AND r.period = ?
                 WHERE p.active = 1 ORDER BY p.name
@@ -2246,7 +2833,7 @@ class Store:
                 SELECT version, turnover, currency, reported_share, contract_rate, client_count,
                        status, risk_level, risk_score, reasons, comment,
                        missing_active, unknown_locations, claims,
-                       attachment, submitted_at, application_breakdown
+                       attachment, submitted_at, application_breakdown, line_items
                 FROM report_versions
                 WHERE report_id = ?
                 ORDER BY version DESC
@@ -2263,6 +2850,7 @@ class Store:
                 "application_breakdown": json.loads(
                     version["application_breakdown"] or "[]"
                 ),
+                "line_items": json.loads(version["line_items"] or "[]"),
             }
             for version in versions
         ]
@@ -2374,6 +2962,72 @@ class Store:
                 queued += 1
         return queued
 
+    def unapprove_report(self, report_id: int, actor: str = "admin") -> bool:
+        """Reverse an approval so the admin can correct a mistake.
+
+        Goes back to ``needs_review`` (the pre-approval workflow state) and
+        clears the approval metadata. ``posted`` reports cannot be reverted
+        via this method — admin must call ``unpost_report`` first.
+        """
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            report = db.execute(
+                "SELECT id, workflow_status FROM reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+            if not report or report["workflow_status"] != "approved":
+                return False
+            db.execute(
+                """
+                UPDATE reports
+                SET workflow_status = 'needs_review',
+                    approved_at = NULL, approved_by = NULL
+                WHERE id = ?
+                """,
+                (report_id,),
+            )
+            self._log_report_event(
+                db,
+                report_id,
+                "needs_review",
+                "approval_reverted",
+                actor=actor,
+                created_at=now,
+            )
+        return True
+
+    def unpost_report(self, report_id: int, actor: str = "admin") -> bool:
+        """Reverse a 'posted' status back to 'approved' so admin can re-send.
+
+        Sheet-write records are kept as-is (they document what was queued
+        for Google Sheets); only the workflow status moves backwards.
+        """
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            report = db.execute(
+                "SELECT id, workflow_status FROM reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+            if not report or report["workflow_status"] != "posted":
+                return False
+            db.execute(
+                """
+                UPDATE reports
+                SET workflow_status = 'approved', posted_at = NULL
+                WHERE id = ?
+                """,
+                (report_id,),
+            )
+            self._log_report_event(
+                db,
+                report_id,
+                "approved",
+                "post_reverted",
+                actor=actor,
+                created_at=now,
+            )
+        return True
+
     def accrual_queue(self, period: str) -> list[dict]:
         items = []
         for item in self.dashboard(period):
@@ -2484,6 +3138,82 @@ class Store:
             )
         return self.partner(partner["id"])
 
+    def bind_telegram_chat_by_username(
+        self, username: str, chat_id: str
+    ) -> dict | None:
+        handle = username.strip().lstrip("@")
+        if not handle:
+            return None
+        with self.connect() as db:
+            # A single Telegram account can own multiple partner accounts
+            # (e.g. one person running several integration projects), so we
+            # link the chat_id to every partner that uses this username.
+            rows = db.execute(
+                """
+                SELECT id FROM partners
+                WHERE lower(replace(telegram, '@', '')) = lower(?)
+                ORDER BY id
+                """,
+                (handle,),
+            ).fetchall()
+            if not rows:
+                return None
+            ids = [r[0] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            db.execute(
+                f"UPDATE partners SET telegram_chat_id = ? WHERE id IN ({placeholders})",
+                (str(chat_id), *ids),
+            )
+            refreshed = db.execute(
+                "SELECT * FROM partners WHERE id = ?", (ids[0],)
+            ).fetchone()
+        return dict(refreshed) if refreshed else None
+
+    def unlink_telegram_chat(self, partner_id: int) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE partners SET telegram_chat_id = '' WHERE id = ? AND active = 1",
+                (partner_id,),
+            )
+            return cursor.rowcount > 0
+
+    def propagate_telegram_chat_by_handle(self, partner_id: int) -> dict | None:
+        # When an admin links a new partner to a Telegram handle that is
+        # already bound to a chat on another partner row, copy that chat
+        # id over so the new partner can be messaged without forcing the
+        # user to press /start again.
+        with self.connect() as db:
+            partner = db.execute(
+                "SELECT id, telegram, telegram_chat_id FROM partners WHERE id = ?",
+                (partner_id,),
+            ).fetchone()
+            if not partner:
+                return None
+            handle = (partner["telegram"] or "").strip().lstrip("@")
+            if not handle or partner["telegram_chat_id"]:
+                return None
+            existing = db.execute(
+                """
+                SELECT telegram_chat_id FROM partners
+                WHERE id != ?
+                  AND telegram_chat_id IS NOT NULL
+                  AND telegram_chat_id <> ''
+                  AND lower(replace(telegram, '@', '')) = lower(?)
+                ORDER BY id LIMIT 1
+                """,
+                (partner_id, handle),
+            ).fetchone()
+            if not existing:
+                return None
+            db.execute(
+                "UPDATE partners SET telegram_chat_id = ? WHERE id = ?",
+                (existing["telegram_chat_id"], partner_id),
+            )
+            refreshed = db.execute(
+                "SELECT * FROM partners WHERE id = ?", (partner_id,)
+            ).fetchone()
+        return dict(refreshed) if refreshed else None
+
     def notice_already_sent(self, partner_id: int, period: str, notice_key: str) -> bool:
         with self.connect() as db:
             row = db.execute(
@@ -2578,3 +3308,299 @@ class Store:
                     datetime.now(UTC).isoformat(),
                 ),
             )
+
+    def replace_reconciliation_base(
+        self,
+        period: str,
+        uploaded_at: str,
+        uploaded_by: str,
+        file_path: str,
+        rows: list[BaseRow],
+        notes: str = "",
+    ) -> None:
+        """Replace the reconciliation base for ``period`` atomically.
+
+        Deletes any existing rows for the period then inserts the new ones,
+        and upserts the ``reconciliation_bases`` metadata row.
+        """
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM reconciliation_base_rows WHERE period = ?",
+                (period,),
+            )
+            if rows:
+                db.executemany(
+                    """
+                    INSERT INTO reconciliation_base_rows
+                    (period, application_id, location_id, turnover, currency,
+                     active, source_row)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            period,
+                            row.application_id,
+                            row.location_id,
+                            row.turnover,
+                            row.currency,
+                            int(bool(row.active)),
+                            row.source_row,
+                        )
+                        for row in rows
+                    ],
+                )
+            db.execute(
+                """
+                INSERT INTO reconciliation_bases
+                (period, uploaded_at, uploaded_by, file_path, row_count, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(period) DO UPDATE SET
+                    uploaded_at = excluded.uploaded_at,
+                    uploaded_by = excluded.uploaded_by,
+                    file_path = excluded.file_path,
+                    row_count = excluded.row_count,
+                    notes = excluded.notes
+                """,
+                (period, uploaded_at, uploaded_by, file_path, len(rows), notes),
+            )
+
+    def get_reconciliation_base(self, period: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM reconciliation_bases WHERE period = ?",
+                (period,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "period": row["period"],
+            "uploaded_at": row["uploaded_at"],
+            "uploaded_by": row["uploaded_by"],
+            "file_path": row["file_path"],
+            "row_count": row["row_count"],
+            "notes": row["notes"],
+        }
+
+    def get_reconciliation_base_rows(self, period: str) -> list[dict]:
+        """Return all rows of the reconciliation base for ``period``.
+
+        Each row is a dict with keys ``application_id``, ``location_id``,
+        ``turnover``, ``currency``, ``active``. The list is empty if no base
+        exists or the base has no rows.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT application_id, location_id, turnover, currency, active
+                FROM reconciliation_base_rows
+                WHERE period = ?
+                ORDER BY location_id
+                """,
+                (period,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_report_clients(self, report_id: int) -> list[str]:
+        """Return the list of ``location_id`` strings for a report."""
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT location_id FROM report_clients
+                WHERE report_id = ?
+                ORDER BY location_id
+                """,
+                (report_id,),
+            ).fetchall()
+        return [str(row["location_id"]) for row in rows]
+
+    def list_reports_for_period(self, period: str) -> list[int]:
+        """Return ``report.id`` values for all reports of ``period``.
+
+        Ordered ascending by ``id`` so the revalidation worker iterates in a
+        stable, chronological order.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT id FROM reports WHERE period = ?
+                ORDER BY id ASC
+                """,
+                (period,),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def update_report_assessment(
+        self,
+        report_id: int,
+        level: str,
+        score: int,
+        reasons_json: str,
+        missing_active_json: str,
+        unknown_locations_json: str,
+    ) -> None:
+        """Update the assess result on an existing report row.
+
+        Used by the revalidation worker after recomputing ``assess`` for a
+        report with the freshly loaded reconciliation base. Does not touch
+        any other column (turnover, claims, workflow status, etc.).
+        """
+        with self.connect() as db:
+            db.execute(
+                """
+                UPDATE reports
+                SET risk_level = ?, risk_score = ?,
+                    reasons = ?, missing_active = ?, unknown_locations = ?
+                WHERE id = ?
+                """,
+                (
+                    level,
+                    int(score),
+                    reasons_json,
+                    missing_active_json,
+                    unknown_locations_json,
+                    report_id,
+                ),
+            )
+
+    def get_revalidation_task(self, task_id: str) -> dict | None:
+        """Return the ``revalidation_tasks`` row for ``task_id`` or ``None``."""
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT id, period, total, processed, current_report, status,
+                       started_at, finished_at, summary
+                FROM revalidation_tasks WHERE id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["summary"] = json.loads(item["summary"] or "{}")
+        except json.JSONDecodeError:
+            item["summary"] = {}
+        return item
+
+    def list_active_revalidation_tasks(self, period: str) -> list[dict]:
+        """Return pending/running revalidation tasks for ``period``."""
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, period, total, processed, current_report, status,
+                       started_at, finished_at, summary
+                FROM revalidation_tasks
+                WHERE period = ? AND status IN ('pending', 'running')
+                ORDER BY id
+                """,
+                (period,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_revalidation_task(self, task_id: str, period: str) -> None:
+        """Insert a new ``pending`` revalidation task row."""
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO revalidation_tasks
+                (id, period, total, processed, current_report, status,
+                 started_at, finished_at, summary)
+                VALUES (?, ?, 0, 0, '', 'pending', '', '', '{}')
+                """,
+                (task_id, period),
+            )
+
+    def cancel_revalidation_tasks(self, period: str) -> int:
+        """Mark all pending/running tasks for ``period`` as ``cancelled``.
+
+        Returns the number of rows updated. Used when a fresh base upload
+        arrives while a previous revalidation is still in flight, so the
+        stale worker stops touching the rows table.
+        """
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE revalidation_tasks
+                SET status = 'cancelled', finished_at = ?
+                WHERE period = ? AND status IN ('pending', 'running')
+                """,
+                (now, period),
+            )
+        return int(cursor.rowcount or 0)
+
+    def update_revalidation_task(
+        self,
+        task_id: str,
+        *,
+        status: str | None = None,
+        total: int | None = None,
+        processed: int | None = None,
+        current_report: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        summary: str | None = None,
+    ) -> None:
+        """Update mutable fields of a revalidation task. No-op if task is gone."""
+        assignments: list[str] = []
+        values: list[object] = []
+        for column, value in (
+            ("status", status),
+            ("total", total),
+            ("processed", processed),
+            ("current_report", current_report),
+            ("started_at", started_at),
+            ("finished_at", finished_at),
+            ("summary", summary),
+        ):
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        if not assignments:
+            return
+        values.append(task_id)
+        with self.connect() as db:
+            db.execute(
+                f"UPDATE revalidation_tasks SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+
+    def get_report_for_revalidation(self, report_id: int) -> dict | None:
+        """Return the columns the revalidation worker needs to re-run ``assess``.
+
+        Includes the partner's contract rate (from the partner record if the
+        report does not store one) and the previous month's turnover /
+        client_count, mirroring the pattern in ``_reassess_report``.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT r.id, r.partner_id, r.period, r.turnover,
+                       r.reported_share,
+                       COALESCE(r.contract_rate, p.rate) AS contract_rate,
+                       r.risk_level, r.report_source,
+                       p.name AS partner_name
+                FROM reports r JOIN partners p ON p.id = r.partner_id
+                WHERE r.id = ?
+                """,
+                (report_id,),
+            ).fetchone()
+            if not row:
+                return None
+            previous = db.execute(
+                """
+                SELECT turnover, client_count FROM reports
+                WHERE partner_id = ? AND period < ?
+                  AND id != ?
+                ORDER BY period DESC LIMIT 1
+                """,
+                (row["partner_id"], row["period"], report_id),
+            ).fetchone()
+        item = dict(row)
+        if previous is not None:
+            item["previous_turnover"] = previous["turnover"]
+            item["previous_client_count"] = previous["client_count"]
+        else:
+            item["previous_turnover"] = None
+            item["previous_client_count"] = None
+        return item
