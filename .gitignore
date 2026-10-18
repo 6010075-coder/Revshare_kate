@@ -1,0 +1,39 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# OS
+.DS_Store
+.vscode/
+.idea/
+
+# Env / secrets — example оставляем, реальные секреты — нет
+.env
+.env.*
+!.env.example
+secrets.env
+secrets.env.*
+
+# Tooling metadata
+.cursor/
+.codex/
+.claude/
+.planning/
+.specify/
+
+# Runtime данные и логи
+logs/
+uploads/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Не тащим большие локальные артефакты
+*.log
+node_modules/
+revshare-history.bundle
