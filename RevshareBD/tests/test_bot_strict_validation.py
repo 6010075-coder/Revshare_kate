@@ -24,9 +24,6 @@ REJECTION_DESCRIPTIONS: dict[str, str] = {
     "currency_not_found": "колонки Currency",
     "application_not_identified": "ссылки на приложение (Application)",
     "locations_missing": "Location ID (хотя бы одного клиента)",
-    "locations_too_few": (
-        "достаточного количества строк (нашёл только 1 клиента — отчёт обычно содержит больше)"
-    ),
 }
 
 REJECTION_FOLLOWUP = (
@@ -271,13 +268,16 @@ def test_reject_locations_missing(
     assert interactions[-1]["response"]["reasons"] == ["locations_missing"]
 
 
-def test_reject_locations_too_few(
+def test_accept_single_client_report(
     store_with_partner: Store,
     telegram_mocks,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Exactly 1 location_id → locations_too_few; message mentions '1 клиента'."""
+    """FR-22 / ТЗ acceptance #22: a report with exactly one client is valid and
+    must produce a confirmable draft. The old `locations_too_few` rule was
+    pre-ТЗ safety net and contradicts the spec.
+    """
     save_counter = _spy_save_bot_draft(store_with_partner)
     _invoke(
         store_with_partner,
@@ -293,16 +293,16 @@ def test_reject_locations_too_few(
         tmp_path,
     )
 
-    assert save_counter["count"] == 0
-    assert len(telegram_mocks["messages"]) == 1
-    text = telegram_mocks["messages"][0]["text"]
-    assert "1 клиента" in text
-    assert text == expected_rejection_message(["locations_too_few"])
-    assert _drafts(store_with_partner) == []
+    # Single client → draft IS saved (no rejection).
+    assert save_counter["count"] == 1
+    assert telegram_mocks["messages"] == []  # no rejection message
+    assert len(telegram_mocks["replies"]) == 1
+    reply_text = telegram_mocks["replies"][0]["text"]
+    assert "Принято" in reply_text
+    assert "Клиентов: 1" in reply_text
 
     interactions = _bot_interactions(store_with_partner)
-    assert interactions[-1]["response"]["status"] == "rejected"
-    assert interactions[-1]["response"]["reasons"] == ["locations_too_few"]
+    assert interactions[-1]["response"]["status"] == "draft_saved"
 
 
 def test_accept_zero_turnover_report(

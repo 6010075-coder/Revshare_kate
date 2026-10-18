@@ -739,8 +739,10 @@ def handle_partner_document(
         reasons.append("application_not_identified")
     if not parsed.location_ids:
         reasons.append("locations_missing")
-    elif len(parsed.location_ids) < 2:
-        reasons.append("locations_too_few")
+    # FR-22: a single client is a valid report (ТЗ acceptance #22). The old
+    # `locations_too_few` rule (rejected < 2 clients) was a pre-ТЗ safety net
+    # that contradicted the spec; partners may legitimately have only one
+    # paying client in a month.
     # FR-22/23: zero-amount reports are valid (partner may have no payments
     # this month). The parser returns turnover=0.0 for both empty reports and
     # reports where every client row has amount=0; both must produce a
@@ -751,7 +753,6 @@ def handle_partner_document(
             "currency_not_found": "колонки Currency",
             "application_not_identified": "ссылки на приложение (Application)",
             "locations_missing": "Location ID (хотя бы одного клиента)",
-            "locations_too_few": "достаточного количества строк (нашёл только 1 клиента — отчёт обычно содержит больше)",
         }
         followup = "Проверь файл и пришли заново. Если нужна помощь — напиши Kate."
         if len(reasons) == 1:
