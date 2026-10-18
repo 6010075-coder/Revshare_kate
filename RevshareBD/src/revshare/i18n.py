@@ -691,7 +691,7 @@ TRANSLATIONS = {
         "evidence_missing_next_report": "The Location ID is still absent from the next submitted report.",
         # Default text for the Telegram invite message (separate from email).
         # Used when a partner's notice_settings has no override or the override is empty.
-        "invite_telegram_default": "Dear partner! Please find the revshare report template for {period} attached. Kindly fill in the file and send it back as a reply. Submission deadline: {deadline}.",
+        "invite_telegram_default": "Dear partner! Please find the revshare report template attached. Kindly fill in the file and send it back as a reply.",
         "invite_telegram_label": "Telegram invite (overrides default)",
         "invite_telegram_reset": "Reset to default",
         "invite_telegram_reset_confirm": "Reset the Telegram invite to the standard wording?",
@@ -1323,6 +1323,7 @@ TRANSLATIONS = {
         "reason_cross_partner": "Location ID также указаны другим партнёром: {count}",
         "reason_clear": "Расхождений не найдено",
         "workflow_auto_checked": "Автоматическая проверка пройдена",
+        "workflow_manual": "Внесено администратором",
         "workflow_needs_review": "Требуется разбор",
         "workflow_approved": "Подтверждено",
         "workflow_posted": "В очереди Partnerships Altegio",
@@ -1347,6 +1348,7 @@ TRANSLATIONS = {
         "submission_history": "История отправок",
         "history_submitted": "Отчёт отправлен",
         "history_resubmitted": "Отчёт отправлен повторно",
+        "history_manual": "Отчёт добавлен вручную",
         "history_approved": "Отчёт подтверждён",
         "history_queued": "Поставлен в очередь Partnerships Altegio",
         "history_snapshot_recheck": "Статус изменился после обновления данных Altegio",
@@ -1409,7 +1411,7 @@ TRANSLATIONS = {
         "evidence_missing_next_report": "Location ID снова отсутствует в следующем отправленном отчёте.",
         # Default text for the Telegram invite message (separate from email).
         # Used when a partner's notice_settings has no override or the override is empty.
-        "invite_telegram_default": "Уважаемый партнёр! Направляем шаблон revshare-отчёта за {period}. Просим заполнить файл и направить его ответным сообщением. Срок предоставления: {deadline}.",
+        "invite_telegram_default": "Уважаемый партнёр! Направляем шаблон revshare-отчёта. Просим заполнить файл и направить его ответным сообщением.",
         "invite_telegram_label": "Приглашение в Telegram (перекрывает стандартное)",
         "invite_telegram_reset": "Сбросить на стандартное",
         "invite_telegram_reset_confirm": "Сбросить текст приглашения в Telegram на стандартный?",
@@ -1980,7 +1982,7 @@ TRANSLATIONS = {
         "evidence_missing_next_report": "Location ID знову відсутній у наступному надісланому звіті.",
         # Default text for the Telegram invite message (separate from email).
         # Used when a partner's notice_settings has no override or the override is empty.
-        "invite_telegram_default": "Шановний партнере! Направляємо шаблон revshare-звіту за {period}. Просимо заповнити файл і надіслати його відповідним повідомленням. Термін подання: {deadline}.",
+        "invite_telegram_default": "Шановний партнере! Направляємо шаблон revshare-звіту. Просимо заповнити файл і надіслати його відповідним повідомленням.",
         "invite_telegram_label": "Запрошення в Telegram (перекриває стандартне)",
         "invite_telegram_reset": "Скинути на стандартне",
         "invite_telegram_reset_confirm": "Скинути текст запрошення в Telegram на стандартний?",

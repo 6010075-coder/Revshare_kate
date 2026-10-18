@@ -24,7 +24,7 @@ def test_status_dates_only_change_for_submission_or_real_status_change(tmp_path)
     assert store.report(first_report)['status_updated_at'] != old
 
 
-def test_conflict_changes_other_partner_status_but_recheck_does_not_refresh_it(tmp_path):
+def test_conflict_does_not_change_other_partner_status(tmp_path):
     store = create_app(tmp_path / 'test.db').state.store
     first = store.partner_by_token('demo-partner')['id']
     second = store.add_partner(name='Second', legal_name='', legal_country='',
@@ -41,8 +41,30 @@ def test_conflict_changes_other_partner_status_but_recheck_does_not_refresh_it(t
     with store.connect() as db:
         db.execute('UPDATE reports SET status_updated_at = ? WHERE id = ?', (old, first_report))
     submit(second)
-    assert store.report(first_report)['status_updated_at'] != old
-    with store.connect() as db:
-        db.execute('UPDATE reports SET status_updated_at = ? WHERE id = ?', (old, first_report))
-    submit(second)
     assert store.report(first_report)['status_updated_at'] == old
+
+
+def test_submission_does_not_erase_other_partner_cross_partner_reason(tmp_path):
+    store = create_app(tmp_path / 'test.db').state.store
+    first = store.partner_by_token('demo-partner')['id']
+    second = store.add_partner(name='Second', legal_name='', legal_country='',
+        altegio_legal_entity='', contact_name='', email='second@example.com', telegram='',
+        report_channel='email', token='second-token', rate=0.3, currency='USD')
+    third = store.add_partner(name='Third', legal_name='', legal_country='',
+        altegio_legal_entity='', contact_name='', email='third@example.com', telegram='',
+        report_channel='email', token='third-token', rate=0.3, currency='USD')
+
+    def submit(partner, locations):
+        return store.submit_report(partner_id=partner, period='2026-08', turnover=100,
+            currency='USD', reported_share=30, location_ids=locations, comment='', attachment=None)[0]
+
+    submit(first, ['101'])
+    second_report = submit(second, ['101'])
+    before = store.report(second_report)
+    assert any(reason['key'] == 'reason_cross_partner' for reason in before['reasons'])
+    before_score = before['risk_score']
+
+    submit(third, ['202'])
+    after = store.report(second_report)
+    assert any(reason['key'] == 'reason_cross_partner' for reason in after['reasons'])
+    assert after['risk_score'] == before_score

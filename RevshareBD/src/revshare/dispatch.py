@@ -219,7 +219,7 @@ def attach_invite_template(
     text message has already been delivered and a missing attachment is a
     softer UX problem than a missing reminder.
     """
-    filename = f"revshare_template_{period}.xlsx"
+    filename = "revshare_template.xlsx"
     caption = "Шаблон для заполнения"
     token = bot_token or telegram_token()
     if not document_sender and not token:

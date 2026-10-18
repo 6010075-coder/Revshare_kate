@@ -489,7 +489,7 @@ def send_template_to_partner(
         )
         return {"status": "build_error"}
 
-    filename = f"revshare_template_{period}.xlsx"
+    filename = "revshare_template.xlsx"
     caption = "Шаблон для заполнения"
     try:
         send_document(
@@ -513,7 +513,7 @@ def send_template_to_partner(
     send_message(
         token,
         chat_id,
-        f"Готово — отправляю шаблон за {period}. Заполни и пришли файл обратно.",
+        "Готово — отправляю шаблон. Заполни и пришли файл обратно.",
         reply_markup=keyboard,
     )
     _log("sent", extras={"file_size": len(document)})

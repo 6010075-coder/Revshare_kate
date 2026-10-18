@@ -664,7 +664,10 @@ def create_app(
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
     admin_user = os.getenv("REVSHARE_ADMIN_USER", "kate").strip()
     admin_password = os.getenv("REVSHARE_ADMIN_PASSWORD", "").strip()
-    auth_override = os.getenv("REVSHARE_ADMIN_AUTH", "1").strip().lower()
+    # MVP default: keep the admin UI available without a login. Restore the
+    # Basic Auth gate explicitly with REVSHARE_ADMIN_AUTH=1 when the service
+    # is exposed beyond the trusted MVP environment.
+    auth_override = os.getenv("REVSHARE_ADMIN_AUTH", "0").strip().lower()
     require_admin_auth = (
         db_path is None and auth_override not in {"0", "false", "no", "off"}
         if admin_auth is None
@@ -2412,6 +2415,7 @@ def create_app(
 
     @app.post("/admin/partners/{partner_id}/report")
     def create_manual_report(
+        request: Request,
         partner_id: int,
         period: str = Form(""),
         turnover: str = Form(""),
@@ -2451,6 +2455,7 @@ def create_app(
             currency=normalized_currency,
             reported_share=share_value,
             comment=note,
+            actor=_session_actor(request) or "admin",
         )
         return RedirectResponse(f"/reports/{report_id}", status_code=303)
 

@@ -233,7 +233,7 @@
         <h3>{{ t("report_events_title") }}</h3>
         <p class="hint">{{ t("report_events_hint") }}</p>
         {% for event in report.status_log %}
-        <div class="history-event"><span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span><strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}</strong></div>
+        <div class="history-event"><span>{{ format_local(event.created_at) }} {{ t("timezone_label") }}</span><strong>{{ t("workflow_" + event.workflow_status) }}{% if event.note %} · {{ t("history_" + event.note) }}{% endif %}{% if event.actor %} · {{ event.actor }}{% endif %}</strong></div>
         {% else %}<p class="hint">{{ t("report_events_empty") }}</p>{% endfor %}
       </div>
     </div>

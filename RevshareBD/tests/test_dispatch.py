@@ -49,7 +49,7 @@ def test_send_is_blocked_until_partner_opens_the_bot(tmp_path):
     )
     assert result["status"] == "sent"
     assert sent[0][0] == "555"
-    assert "2026-08" in sent[0][1]
+    assert "2026-08" not in sent[0][1]
 
 
 def test_russian_partner_gets_russian_text_and_kate_gets_russian_digest(tmp_path):
@@ -82,7 +82,7 @@ def test_russian_partner_gets_russian_text_and_kate_gets_russian_digest(tmp_path
     # Russian wording that intentionally omits the web-form link (the xlsx
     # template attached below carries the report flow).
     assert partner_message.startswith("Уважаемый партнёр")
-    assert "2026-08" in partner_message
+    assert "2026-08" not in partner_message
     assert "http" not in partner_message
 
     digest = digest_text(store, "2026-08", "ru")
@@ -337,7 +337,7 @@ def test_template_attaches_only_on_invite(tmp_path):
     assert len(documents) == 1
     chat, doc, name, caption = documents[0]
     assert chat == "999"
-    assert name == "revshare_template_2026-08.xlsx"
+    assert name == "revshare_template.xlsx"
     assert caption == "Шаблон для заполнения"
     assert doc.startswith(b"PK")  # XLSX files are ZIPs starting with PK
     assert _count_template_interactions(store, partner_id) == 1

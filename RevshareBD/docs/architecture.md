@@ -228,7 +228,7 @@ bot.py polling в отдельном процессе (worker)
 
 **Есть:**
 
-- Basic Auth на админских страницах (`REVSHARE_ADMIN_PASSWORD`).
+- Basic Auth на админских страницах включается переменной `REVSHARE_ADMIN_AUTH=1` и использует `REVSHARE_ADMIN_PASSWORD`; по умолчанию на этапе MVP отключён.
 - Персональные токены для каждого партнёра (`/submit/{token}`).
 - Секреты в `data/secrets.env`, файл в `.gitignore`.
 

@@ -1151,7 +1151,13 @@ class Store:
         rates.update(self._manual_fx_rates())
         return rates
 
-    def fx_snapshot(self, period: str, *, refresh: bool = False) -> dict:
+    def fx_snapshot(
+        self,
+        period: str,
+        *,
+        refresh: bool = False,
+        allow_fetch: bool = True,
+    ) -> dict:
         period = valid_period(period) or ""
         rates = dict(DEFAULT_USD_RATES)
         rates.update(self._manual_fx_rates())
@@ -1198,7 +1204,10 @@ class Store:
                 }
             )
             return info
-        loaded = self.fx_loader(period) if self.fx_loader else None
+        # Page requests must not block on the external FX service. Callers
+        # that need a fresh snapshot can keep the default; read-only pages
+        # can use the cached values/fallback by disabling the fetch.
+        loaded = self.fx_loader(period) if self.fx_loader and allow_fetch else None
         if loaded:
             fetched = dict(loaded)
             days = int(fetched.pop("_days", 0) or 0)
@@ -1231,8 +1240,16 @@ class Store:
         info["rates"] = rates
         return info
 
-    def fx_rates_for(self, period: str, *, refresh: bool = False) -> dict[str, float]:
-        return self.fx_snapshot(period, refresh=refresh)["rates"]
+    def fx_rates_for(
+        self,
+        period: str,
+        *,
+        refresh: bool = False,
+        allow_fetch: bool = True,
+    ) -> dict[str, float]:
+        return self.fx_snapshot(
+            period, refresh=refresh, allow_fetch=allow_fetch
+        )["rates"]
 
     def autoload_reporting_rates(self, today: date | None = None) -> bool:
         """Load the closed reporting month once, typically on the 1st."""
@@ -1881,7 +1898,10 @@ class Store:
                 if item["contract_rate"] is not None or rate is not None
                 else None
             )
-            rates = self.fx_rates_for(item["period"])
+            # Rendering the partner card must stay local and deterministic;
+            # missing historical FX data is handled by the configured
+            # fallback until the background loader fills the cache.
+            rates = self.fx_rates_for(item["period"], allow_fetch=False)
             item["turnover_usd"] = to_usd(item["turnover"], item["currency"], rates)
             item["share_usd"] = to_usd(item["expected_share"], item["currency"], rates)
             connected, active = self.usage(partner_id, item["period"])
@@ -2193,8 +2213,17 @@ class Store:
                 )
 
     def _apply_cross_partner_conflicts(
-        self, db: sqlite3.Connection, period: str
+        self,
+        db: sqlite3.Connection,
+        period: str,
+        affected_partner_id: int,
     ) -> None:
+        """Apply cross-partner diagnostics only to the current submitter.
+
+        The conflict scan still considers every report for the period, but a
+        new submission must not make another partner's dashboard status or
+        ``status_updated_at`` look freshly changed.
+        """
         conflicts = db.execute(
             """
             SELECT rc.location_id, GROUP_CONCAT(DISTINCT r.partner_id) AS partner_ids
@@ -2218,6 +2247,8 @@ class Store:
             (period,),
         ).fetchall()
         for report in reports:
+            if int(report["partner_id"]) != int(affected_partner_id):
+                continue
             reasons = [
                 reason
                 for reason in json.loads(report["reasons"])
@@ -2589,6 +2620,9 @@ class Store:
         application_breakdown: list[dict[str, object]] | None = None,
         report_source: str = "partner_file",
         application_id: int | None = None,
+        event_workflow_status: str | None = None,
+        event_note: str | None = None,
+        event_actor: str = "partner",
     ) -> tuple[int, Review]:
         # Step 3: prefer the new reconciliation base over the legacy Altegio
         # BI snapshot. The base is the authoritative source for ``connected``
@@ -2876,9 +2910,9 @@ class Store:
             self._log_report_event(
                 db,
                 report_id,
-                workflow_status,
-                "resubmitted" if existing else "submitted",
-                actor="partner",
+                event_workflow_status or workflow_status,
+                event_note or ("resubmitted" if existing else "submitted"),
+                actor=event_actor,
                 created_at=now,
             )
             previous = db.execute(
@@ -2916,12 +2950,12 @@ class Store:
                         ),
                     )
             before = self._status_snapshot(db, period)
-            period_reports = db.execute(
-                "SELECT DISTINCT partner_id FROM reports WHERE period = ?", (period,)
-            ).fetchall()
-            for period_report in period_reports:
-                self._reassess_report(db, period_report["partner_id"], period)
-            self._apply_cross_partner_conflicts(db, period)
+            # A submission changes only the submitting partner's report.
+            # Reassessing every report in the period would rebuild their
+            # reasons from scratch and erase diagnostics (for example
+            # ``reason_cross_partner``) created by an earlier submission.
+            self._reassess_report(db, partner_id, period)
+            self._apply_cross_partner_conflicts(db, period, partner_id)
             self._preserve_unchanged_status_times(db, period, before)
         return int(report_id), review
 
@@ -2933,6 +2967,7 @@ class Store:
         currency: str,
         reported_share: float | None,
         comment: str,
+        actor: str = "admin",
     ) -> tuple[int, Review]:
         """Save an operator-entered report without a partner file or registry."""
         return self.submit_report(
@@ -2947,6 +2982,9 @@ class Store:
             claims=[],
             application_breakdown=[],
             report_source="manual",
+            event_workflow_status="manual",
+            event_note="manual",
+            event_actor=actor,
         )
 
     def dashboard(self, period: str) -> list[dict]:

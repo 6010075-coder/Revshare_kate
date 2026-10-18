@@ -42,6 +42,8 @@ cp secrets.env.example data/secrets.env
 
 ```bash
 REVSHARE_ADMIN_PASSWORD=localdev
+# MVP: auth is disabled by default; set REVSHARE_ADMIN_AUTH=1 to enable it.
+REVSHARE_ADMIN_AUTH=0
 REVSHARE_SECRET_KEY=local-secret-not-for-prod
 ```
 
@@ -99,7 +101,7 @@ http://127.0.0.1:43127
 http://127.0.0.1:43127/submit/demo-partner
 ```
 
-Логин в админку — пароль из `REVSHARE_ADMIN_PASSWORD` (Basic Auth браузера).
+На этапе MVP логин в админку не требуется. Для возврата Basic Auth задайте `REVSHARE_ADMIN_AUTH=1`; пароль берётся из `REVSHARE_ADMIN_PASSWORD`.
 
 ### Фоновый worker (планировщик + Telegram polling)
 

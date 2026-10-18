@@ -79,16 +79,14 @@ def test_i18n_exposes_invite_telegram_default_in_all_three_languages():
     for lang, opener in expected.items():
         text = translator(lang)("invite_telegram_default")
         assert text.startswith(opener), (lang, text)
-        assert "{period}" in text and "{deadline}" in text, (lang, text)
+        assert "{period}" not in text and "{deadline}" not in text, (lang, text)
 
 
-def test_invite_telegram_default_keeps_placeholders_unrendered():
+def test_invite_telegram_default_has_no_period_placeholders():
     for lang in ("en", "ru", "uk"):
         text = translator(lang)("invite_telegram_default")
-        # Placeholders must NOT be substituted by the translator — the
-        # dispatcher formats them with real values at send time.
-        assert "{period}" in text
-        assert "{deadline}" in text
+        assert "{period}" not in text
+        assert "{deadline}" not in text
         # And no real period like "2026-08" should leak in.
         assert "2026" not in text
 
@@ -118,16 +116,15 @@ def test_telegram_invite_uses_i18n_default_when_no_override(tmp_path: Path):
     assert chat == "555"
     # i18n ru default — formal, no link appended
     assert text.startswith("Уважаемый партнёр")
-    assert "2026-08" in text
-    # Deadline rendered as ISO date
-    assert "2026-09-07" in text
+    assert "2026-08" not in text
+    assert "2026-09-07" not in text
     # Web-form link intentionally absent on the Telegram invite
     assert "http" not in text
     assert "submit/tok" not in text
     # The xlsx template attachment still travels with the invite
     assert len(documents) == 1
     assert documents[0][0] == "555"
-    assert documents[0][2] == "revshare_template_2026-08.xlsx"
+    assert documents[0][2] == "revshare_template.xlsx"
 
 
 def test_telegram_invite_uses_non_empty_override(tmp_path: Path):

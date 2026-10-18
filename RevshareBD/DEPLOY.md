@@ -83,6 +83,7 @@ jobs:
 ```
 REVSHARE_PUBLIC_URL=https://revshare.example.altegio.com
 REVSHARE_ADMIN_PASSWORD=<strong password>
+REVSHARE_ADMIN_AUTH=1
 REVSHARE_ADMIN_USER=kate
 ```
 

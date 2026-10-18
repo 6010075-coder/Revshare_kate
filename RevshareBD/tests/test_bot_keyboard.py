@@ -203,11 +203,12 @@ def test_send_template_on_button_press(
     assert len(telegram_mocks["documents"]) == 1
     doc = telegram_mocks["documents"][0]
     assert doc["chat_id"] == 100500
-    assert doc["filename"].startswith("revshare_template_")
+    assert doc["filename"] == "revshare_template.xlsx"
     assert doc["filename"].endswith(".xlsx")
     # Confirmation text was sent after the document.
     assert any(
-        "Готово" in m["text"] and m["chat_id"] == 100500
+        m["text"] == "Готово — отправляю шаблон. Заполни и пришли файл обратно."
+        and m["chat_id"] == 100500
         for m in telegram_mocks["messages"]
     )
     interactions = _bot_interactions(
