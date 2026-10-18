@@ -7,7 +7,6 @@
     <div>
       <p class="report-period">
         <strong>{{ t("month_" + report.period[5:7]) }} {{ report.period[:4] }}</strong>
-        <small>{{ t("reporting_period") }} · {{ report.period }}</small>
       </p>
       <h1>{{ report.partner_name }}</h1>
       <p>
@@ -82,7 +81,6 @@
   {% if report.application_breakdown %}
   <section class="card report-section">
     <h2>{{ t("application_breakdown") }}</h2>
-    <p class="hint">{{ t("application_breakdown_hint") }}</p>
     <div class="application-breakdown-list">
       {% for item in report.application_breakdown %}
       <article class="application-breakdown-card">

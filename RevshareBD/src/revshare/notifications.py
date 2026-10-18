@@ -412,6 +412,8 @@ def schedule_for_period(
     deadline = deadline_date(settings, period)
     events = []
     for notice in settings["notices"]:
+        if notice["key"] == "invite_telegram":
+            continue
         if not notice["enabled"]:
             continue
         send_on = planned_date(

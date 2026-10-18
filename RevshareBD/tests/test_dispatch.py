@@ -134,7 +134,7 @@ def test_digest_goes_to_the_chat_from_settings(tmp_path):
     assert not any(item["key"] == "digest" for item in repeated)
 
 
-def test_email_channel_sends_a_subject_and_body(tmp_path):
+def test_notice_without_telegram_chat_is_blocked(tmp_path):
     store = Store(tmp_path / "test.db")
     partner_id = store.add_partner(
         name="Mail App",
@@ -144,37 +144,23 @@ def test_email_channel_sends_a_subject_and_body(tmp_path):
         contact_name="",
         email="finance@example.com",
         telegram="",
-        report_channel="email",
+        report_channel="telegram",
         token="mail-token",
         rate=0.15,
         currency="EUR",
         notice_settings={"language": "ru"},
     )
-    letters = []
     result = send_partner_notice(
         store,
         store.partner(partner_id),
         "2026-08",
         "invite",
-        mail_sender=lambda to, subject, body, html: letters.append(
-            (to, subject, body, html)
-        ),
         force=True,
     )
-    assert result["status"] == "sent"
-    to, subject, body, html = letters[0]
-    assert to == "finance@example.com"
-    assert subject == "Mail App: отчёт за 2026-08"
-    assert body.startswith("Здравствуйте")
-    assert "http" in body
-    assert "Открыть форму отчёта" in html
-    assert "/submit/mail-token?period=2026-08" in html
-    assert "Срок сдачи: 2026-09-07 включительно." in html
-    assert "Что подготовить" in html
-    assert "<html" in html
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
 
 
-def test_letter_keeps_the_link_out_of_the_body_text(tmp_path):
+def test_letter_omits_the_removed_form_link(tmp_path):
     store = Store(tmp_path / "test.db")
     partner_id = store.add_partner(
         name="Letter App",
@@ -195,14 +181,14 @@ def test_letter_keeps_the_link_out_of_the_body_text(tmp_path):
     )
     assert letter["subject"] == "Letter App: report for 2026-08 is still missing"
     assert "<p" in letter["html"]
-    assert "submit/letter-token" in letter["html"]
+    assert "submit/letter-token" not in letter["html"]
     assert letter["html"].count("Reminder: the Letter App report") == 1
     assert "<p style" not in letter["text"]
-    assert "Open the report form: http" in letter["text"]
+    assert "Open the report form" not in letter["text"]
     assert "Deadline: 2026-09-07 inclusive." in letter["text"]
 
 
-def test_email_without_address_is_blocked(tmp_path):
+def test_notice_without_telegram_handle_is_blocked(tmp_path):
     store = Store(tmp_path / "test.db")
     partner_id = store.add_partner(
         name="No Mail",
@@ -212,24 +198,19 @@ def test_email_without_address_is_blocked(tmp_path):
         contact_name="",
         email="",
         telegram="",
-        report_channel="email",
+        report_channel="telegram",
         token="nomail-token",
         rate=0.15,
         currency="EUR",
     )
-    letters = []
     result = send_partner_notice(
         store,
         store.partner(partner_id),
         "2026-08",
         "invite",
-        mail_sender=lambda to, subject, body, html: letters.append(
-            (to, subject, body, html)
-        ),
         force=True,
     )
-    assert result == {"status": "blocked", "detail": "email_missing"}
-    assert letters == []
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
 
 
 def test_due_notices_use_the_partner_schedule(tmp_path):
@@ -377,7 +358,7 @@ def test_template_attaches_only_on_invite(tmp_path):
     assert _count_template_interactions(store, partner_id) == 1
 
 
-def test_email_invite_does_not_attach_template(tmp_path):
+def test_invite_without_telegram_chat_does_not_attach_template(tmp_path):
     store = Store(tmp_path / "test.db")
     partner_id = store.add_partner(
         name="Mail Template App",
@@ -385,28 +366,24 @@ def test_email_invite_does_not_attach_template(tmp_path):
         legal_country="",
         altegio_legal_entity="",
         contact_name="",
-        email="finance@example.com",
+        email="",
         telegram="",
-        report_channel="email",
+        report_channel="telegram",
         token="mail-template-token",
         rate=0.2,
         currency="USD",
     )
     documents: list[tuple[str, bytes, str, str]] = []
-    letters: list[tuple[str, str, str, str]] = []
     result = send_partner_notice(
         store,
         store.partner(partner_id),
         "2026-08",
         "invite",
-        mail_sender=lambda to, subject, body, html: letters.append(
-            (to, subject, body, html)
-        ),
         document_sender=lambda chat, doc, name, caption: documents.append(
             (chat, doc, name, caption)
         ),
         force=True,
     )
-    assert result["status"] == "sent"
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
     assert documents == []
     assert _count_template_interactions(store, partner_id) == 0

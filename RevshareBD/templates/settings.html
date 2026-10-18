@@ -14,9 +14,7 @@
 {% if saved %}<div class="notice neutral">{{ t("settings_saved") }}</div>{% endif %}
 
 {% set settings_tabs = [
-  ("general", t("settings_general")),
   ("bot", t("bot_tab_title")),
-  ("digest", t("digest_tab_title")),
   ("schedule", t("notice_schedule")),
   ("notices", t("notice_texts")),
 ] %}
@@ -27,36 +25,13 @@
   {% endfor %}
 </nav>
 
-<form method="post" action="/admin/settings/general" class="card wide-form tab-panel {{ 'active' if active_tab == 'general' else '' }}" data-panel="general">
-{{ csrf_field(csrf_token) }}
-  <h2>{{ t("settings_general") }}</h2>
-  <p class="hint">{{ t("settings_general_hint") }}</p>
-  <div class="field">
-    <label for="public_base_url">{{ t("public_url") }}</label>
-    <input id="public_base_url" name="public_base_url" type="url" value="{{ public_form_url }}" placeholder="https://">
-    <small>{{ t("public_url_hint") }}</small>
-  </div>
-  <div class="form-actions">
-    <button class="button" type="submit">{{ t("save_changes") }}</button>
-  </div>
-</form>
-
 <section class="card wide-form tab-panel {{ 'active' if active_tab == 'bot' else '' }}" data-panel="bot">
   <h2>{{ t("bot_tab_title") }}</h2>
   {% if bot_ready %}
   <p class="hint"><strong>{{ t("bot_status_connected") }}</strong> · {{ t("bot_username_label") }}: <code>@{{ bot_username }}</code></p>
   <p class="hint">{{ t("bot_capabilities") }}</p>
-  {% if not public_form_url %}
-  <p class="hint">{{ t("public_url_missing") }}</p>
-  {% endif %}
-  {% else %}
-  <p class="hint">{{ t("telegram_bot_missing") }}</p>
-  {% endif %}
-</section>
-
-<section class="card wide-form tab-panel {{ 'active' if active_tab == 'digest' else '' }}" data-panel="digest">
-  <h2>{{ t("digest_tab_title") }}</h2>
-  {% if bot_ready %}
+  <div class="form-section compact-section">
+  <h3>{{ t("digest_tab_title") }}</h3>
   <p class="hint">{{ t("digest_section_intro") }}</p>
   <form method="post" action="/admin/settings/telegram">
     {{ csrf_field(csrf_token) }}
@@ -77,6 +52,7 @@
       <button class="button" type="submit">{{ t("save_changes") }}</button>
     </div>
   </form>
+  </div>
   {% else %}
   <p class="hint">{{ t("telegram_bot_missing") }}</p>
   {% endif %}
@@ -109,7 +85,7 @@
       <span>{{ t("schedule_send_header") }}</span>
     </div>
     <div class="schedule-rows">
-      {% for notice in global_schedule.notices %}
+      {% for notice in global_schedule.notices if notice.key != "invite_telegram" %}
       <div class="schedule-row {{ 'off' if not notice.enabled else '' }}" data-schedule-row data-notice-key="{{ notice.key }}">
         <input type="hidden" name="notice_key" value="{{ notice.key }}">
         <div class="schedule-text">
@@ -172,18 +148,6 @@
     <input type="hidden" name="notice_key" value="{{ key }}">
   </div>
   {% endfor %}
-  <div class="form-section compact-section" data-invite-telegram-section>
-    <h2>{{ t("invite_telegram_label") }}</h2>
-    <div class="field">
-      <label for="text-invite-telegram">{{ t("notice_text") }}</label>
-      <textarea id="text-invite-telegram" name="notice_message_invite_telegram" rows="4" data-invite-telegram-input>{{ invite_telegram_template }}</textarea>
-      <small>{{ t("notice_placeholders") }}</small>
-    </div>
-    <div class="form-actions inline-actions">
-      <button class="button secondary" type="button" data-invite-telegram-reset data-confirm-reset="{{ t('invite_telegram_reset_confirm') }}">{{ t("invite_telegram_reset") }}</button>
-    </div>
-    <input type="hidden" name="notice_key" value="invite_telegram">
-  </div>
   <p class="hint">{{ t("notice_texts_reset_hint") }}</p>
   <div class="form-actions">
     <button class="button" type="submit">{{ t("save_changes") }}</button>

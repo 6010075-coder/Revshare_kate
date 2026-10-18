@@ -1,12 +1,9 @@
 """Build the partner-facing revshare report template (.xlsx).
 
-The same helper is used by both:
-- the public download endpoint ``GET /submit/{token}/template.xlsx``
-- the bot when attaching the template to the first invitation
-  (``notice_key='invite'``).
+The helper attaches the template to the first Telegram report request
+(``notice_key='invite'``).
 
-Centralising the XLSX construction keeps the partner-facing schema
-identical for downloads and Telegram deliveries.
+Centralising the XLSX construction keeps the partner-facing schema consistent.
 
 Template layout (two sheets):
 

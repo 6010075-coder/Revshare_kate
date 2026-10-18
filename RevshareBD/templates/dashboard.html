@@ -20,12 +20,12 @@
 
 <section class="stats">
   <article class="money">
-    <strong>{{ "{:,.2f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>
+    <strong>{{ "{:,.0f}".format(verified_group.amount).replace(",", " ") }} {{ verified_group.currency }}</strong>
     <span>{{ t("revshare_verified") }}</span>
     <small>{{ t("partners_with_reports", count=verified_group.count) }}{% if verified_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
   </article>
   <article class="money">
-    <strong>{{ "{:,.2f}".format(review_group.amount).replace(",", " ") }} {{ review_group.currency }}</strong>
+    <strong>{{ "{:,.0f}".format(review_group.amount).replace(",", " ") }} {{ review_group.currency }}</strong>
     <span>{{ t("revshare_in_review") }}</span>
     <small>{{ t("partners_with_reports", count=review_group.count) }}{% if review_group.converted %} · {{ t("converted_total_hint") }}{% endif %}</small>
   </article>

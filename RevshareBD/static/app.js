@@ -9,15 +9,15 @@ const syncApplicationOpenLink = (input) => {
   link.tabIndex = valid ? 0 : -1;
 };
 
-const syncApplicationRowLink = (input) => {
-  const link = input.closest(".repeat-row")?.querySelector("[data-application-row-link]");
+const resetApplicationUrlField = (input) => {
+  const field = input.closest(".application-url-field");
+  const link = field?.querySelector("[data-application-row-link]");
+  field?.classList.remove("has-application-link");
   if (!link) return;
-  const value = input.value.trim();
-  const valid = /^https?:\/\//i.test(value);
-  link.hidden = !valid;
-  link.href = valid ? value : "#";
-  link.textContent = value;
-  link.title = value;
+  link.hidden = true;
+  link.removeAttribute("href");
+  link.textContent = "";
+  link.title = "";
 };
 
 const csrfTokenMeta = document.querySelector('meta[name="csrf-token"]');
@@ -96,11 +96,6 @@ window.fetch = function patchedFetch(input, init = {}) {
   return originalFetch.call(this, input, { ...init, headers });
 };
 
-document.querySelectorAll('[name="application_url"]').forEach((input) => {
-  syncApplicationRowLink(input);
-  input.addEventListener("input", () => syncApplicationRowLink(input));
-});
-
 document.querySelectorAll("[data-application-url]").forEach((input) => {
   syncApplicationOpenLink(input);
   input.addEventListener("input", () => syncApplicationOpenLink(input));
@@ -120,8 +115,7 @@ document.querySelectorAll("[data-add]").forEach((button) => {
     });
     list.appendChild(copy);
     copy.querySelectorAll('[name="application_url"]').forEach((input) => {
-      syncApplicationRowLink(input);
-      input.addEventListener("input", () => syncApplicationRowLink(input));
+      resetApplicationUrlField(input);
     });
     copy.querySelectorAll("[data-application-url]").forEach((input) => {
       syncApplicationOpenLink(input);
@@ -247,27 +241,10 @@ document.addEventListener("click", (event) => {
       select.selectedIndex = 0;
     });
     const urlInput = row.querySelector('[name="application_url"]');
-    if (urlInput) syncApplicationRowLink(urlInput);
+    if (urlInput) resetApplicationUrlField(urlInput);
     return;
   }
   button.closest(".repeat-row").remove();
-});
-
-// "Reset to default" button for the invite_telegram textarea. Clearing
-// the value is the explicit signal to the server that the partner has no
-// per-language override and the i18n default should be used.
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-invite-telegram-reset]");
-  if (!button) return;
-  const confirmMessage = button.dataset.confirmReset;
-  if (confirmMessage && !window.confirm(confirmMessage)) {
-    return;
-  }
-  const input = document.querySelector("[data-invite-telegram-input]");
-  if (input instanceof HTMLTextAreaElement) {
-    input.value = "";
-    input.focus();
-  }
 });
 
 // Live preview of the resolved notification date inside the schedule editor.
@@ -362,7 +339,7 @@ document.addEventListener("click", async (event) => {
       button.textContent = button.dataset.copiedLabel || "Copied";
     } catch (error) {
       console.error("Failed to copy invite link", error);
-      button.textContent = "Copy failed";
+      button.textContent = button.dataset.copyFailedLabel || "Copy failed";
     } finally {
       window.setTimeout(() => { button.textContent = restore; }, 1800);
     }

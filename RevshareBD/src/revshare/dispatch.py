@@ -3,10 +3,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable
 
-from revshare.email_letter import SUBJECTS as EMAIL_SUBJECTS
 from revshare.email_letter import build_letter
 from revshare.i18n import translator
-from revshare.mailer import MailError, mail_ready, send_email
 from revshare.notifications import (
     deadline_date,
     format_notice,
@@ -21,23 +19,7 @@ from revshare.telegram import TelegramError, send_document, send_message
 
 
 Sender = Callable[[str, str], None]
-MailSender = Callable[[str, str, str, str], None]
 DocumentSender = Callable[[str, bytes, str, str], None]
-
-DEFAULT_PUBLIC_URL = "http://127.0.0.1:43127"
-
-
-def form_link(token: str, period: str, store: Store | None = None) -> str:
-    base = ""
-    if store is not None:
-        base = store.setting("public_base_url")
-    if not base:
-        from revshare.secrets import public_base_url
-
-        base = public_base_url()
-    base = (base or DEFAULT_PUBLIC_URL).rstrip("/")
-    return f"{base}/submit/{token}?period={period}"
-
 
 def bot_start_link(bot_username: str, start: str) -> str:
     return f"https://t.me/{bot_username}?start={start}"
@@ -52,7 +34,7 @@ def due_events(
             partner["notice_settings"],
             period,
             name=partner["name"],
-            link=form_link(partner["token"], period, store),
+            link="",
         )
         if event["send_on"] == today
     ]
@@ -135,7 +117,7 @@ def partner_letter(
     store: Store | None = None,
 ) -> dict[str, str]:
     settings = partner["notice_settings"]
-    link = form_link(partner["token"], period, store)
+    link = ""
     deadline = deadline_date(settings, period)
     if message is None:
         template = next(
@@ -289,7 +271,6 @@ def send_partner_notice(
     notice_key: str,
     *,
     sender: Sender | None = None,
-    mail_sender: MailSender | None = None,
     bot_token: str | None = None,
     document_sender: DocumentSender | None = None,
     force: bool = False,
@@ -300,7 +281,7 @@ def send_partner_notice(
             partner["notice_settings"],
             period,
             name=partner["name"],
-            link=form_link(partner["token"], period, store),
+            link="",
         )
     }
     event = events.get(notice_key)
@@ -308,26 +289,16 @@ def send_partner_notice(
         return {"status": "skipped", "detail": "notice_disabled"}
     if should_skip_because_submitted(store, partner["id"], period, notice_key):
         return {"status": "skipped", "detail": "already_submitted"}
-    channel = partner.get("report_channel")
-    if channel == "email":
-        address = (partner.get("email") or "").strip()
-        if not address:
-            return {"status": "blocked", "detail": "email_missing"}
-        if not mail_sender and not mail_ready():
-            return {"status": "blocked", "detail": "smtp_not_configured"}
-    elif channel == "telegram":
-        chat_id = partner.get("telegram_chat_id") or ""
-        if not chat_id:
-            return {"status": "blocked", "detail": "partner_must_start_bot"}
-        if not sender and not (bot_token or telegram_token()):
-            return {"status": "blocked", "detail": "bot_token_missing"}
-    else:
-        return {"status": "skipped", "detail": "channel_not_supported"}
+    chat_id = partner.get("telegram_chat_id") or ""
+    if not chat_id:
+        return {"status": "blocked", "detail": "partner_must_start_bot"}
+    if not sender and not (bot_token or telegram_token()):
+        return {"status": "blocked", "detail": "bot_token_missing"}
     if not store.claim_notice(
         partner["id"], period, notice_key, force=force
     ):
         return {"status": "skipped", "detail": "already_sent"}
-    if channel == "telegram" and notice_key == "invite":
+    if notice_key == "invite":
         # The Telegram invite uses a separate template (per-partner override
         # from notice_settings.notices or i18n invite_telegram_default).
         # It deliberately does NOT carry the web-form link — the xlsx
@@ -336,29 +307,7 @@ def send_partner_notice(
         text = _resolve_invite_text(partner, period, deadline_iso)
     else:
         text = event["message"].strip()
-        link = form_link(partner["token"], period, store)
-        if link not in text:
-            text = f"{text}\n{link}"
-    if channel == "email":
-        letter = partner_letter(
-            partner, period, notice_key, message=event["message"], store=store
-        )
-        try:
-            if mail_sender:
-                mail_sender(address, letter["subject"], letter["text"], letter["html"])
-            else:
-                send_email(
-                    address, letter["subject"], letter["text"], letter["html"]
-                )
-        except MailError as error:
-            store.log_notice_send(
-                partner["id"], period, notice_key, "error", str(error)[:500]
-            )
-            return {"status": "error", "detail": "email_rejected"}
-        store.log_notice_send(partner["id"], period, notice_key, "sent", "email")
-        return {"status": "sent", "detail": notice_key}
 
-    chat_id = partner.get("telegram_chat_id") or ""
     try:
         if sender:
             sender(str(chat_id), text)
@@ -384,7 +333,6 @@ def send_due_notices(
     period: str | None = None,
     *,
     sender: Sender | None = None,
-    mail_sender: MailSender | None = None,
     bot_token: str | None = None,
     kate_sender: Sender | None = None,
 ) -> list[dict[str, str]]:
@@ -400,7 +348,6 @@ def send_due_notices(
                     period,
                     event["key"],
                     sender=sender,
-                    mail_sender=mail_sender,
                     bot_token=bot_token,
                 )
                 results.append({"partner": partner["name"], "key": event["key"], **result})

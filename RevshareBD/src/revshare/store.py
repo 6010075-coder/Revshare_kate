@@ -56,10 +56,8 @@ NOTICE_CLAIM_TIMEOUT = timedelta(minutes=15)
 
 # Telegram invite tokens ----------------------------------------------------
 #
-# Separate one-time token bound to a partner. Distinct from ``partner.token``
-# which is used for the public ``/submit/<token>`` form link — that token must
-# remain stable across Telegram-contact changes so the existing report-form
-# link keeps working.
+# Separate one-time token bound to a partner. It is distinct from the stable
+# partner token retained for existing records and future integrations.
 TELEGRAM_INVITE_STATUS_ACTIVE = "active"
 TELEGRAM_INVITE_STATUS_USED = "used"
 TELEGRAM_INVITE_STATUS_REVOKED = "revoked"
@@ -539,7 +537,7 @@ class Store:
                     contact_name TEXT NOT NULL DEFAULT '',
                     email TEXT NOT NULL DEFAULT '',
                     telegram TEXT NOT NULL DEFAULT '',
-                    report_channel TEXT NOT NULL DEFAULT 'email',
+                    report_channel TEXT NOT NULL DEFAULT 'telegram',
                     internal_comment TEXT NOT NULL DEFAULT '',
                     token TEXT NOT NULL UNIQUE,
                     rate REAL,
@@ -819,9 +817,18 @@ class Store:
                 db.execute(
                     """
                     ALTER TABLE partners
-                    ADD COLUMN report_channel TEXT NOT NULL DEFAULT 'email'
+                    ADD COLUMN report_channel TEXT NOT NULL DEFAULT 'telegram'
                     """
                 )
+            db.execute(
+                """
+                UPDATE partners
+                SET report_channel = 'telegram'
+                WHERE report_channel IS NULL
+                   OR report_channel = ''
+                   OR report_channel = 'email'
+                """
+            )
             if "notifications" not in partner_columns:
                 db.execute(
                     "ALTER TABLE partners ADD COLUMN notifications TEXT NOT NULL DEFAULT '{}'"

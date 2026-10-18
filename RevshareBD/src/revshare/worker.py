@@ -10,19 +10,23 @@ from revshare.altegio_sync import sync_period
 from revshare.notifications import reporting_period
 from revshare.secrets import load_secrets, telegram_token
 from revshare.store import Store
+from revshare.timezone import seconds_until_notice_send
 
 log = logging.getLogger("revshare.worker")
 
 
 async def _notice_scheduler_loop(store: Store) -> None:
     while True:
+        delay = seconds_until_notice_send()
+        log.info("Next scheduled notices in %.0f seconds (11:15 GMT+4)", delay)
+        await asyncio.sleep(delay)
         try:
             await asyncio.to_thread(send_due_notices, store)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Notice scheduler run failed")
-        await asyncio.sleep(3600)
+        await asyncio.sleep(60)
 
 
 async def _fx_autoload_loop(store: Store) -> None:

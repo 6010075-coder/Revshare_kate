@@ -20,6 +20,16 @@ from revshare.store import (
 from revshare.web import create_app
 
 
+def test_public_partner_form_is_retired(tmp_path: Path):
+    app = create_app(tmp_path / "test.db", public_forms_enabled=False)
+    client = TestClient(app)
+
+    response = client.get("/submit/demo-partner")
+
+    assert response.status_code == 410
+    assert "no longer available" in response.text
+
+
 def _seed_reconciliation_base(
     store: Store,
     period: str,
@@ -1459,21 +1469,17 @@ def test_settings_load_the_month_average_on_refresh(tmp_path: Path):
     assert store.fx_rates_for("2026-08")["EUR"] == 0.77
 
 
-def test_admin_can_preview_the_report_email(tmp_path: Path):
+def test_partner_card_has_no_email_channel(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
     store: Store = app.state.store
     partner = store.partner_by_token("demo-partner")
 
-    preview = client.get(f"/admin/partners/{partner['id']}/letter/invite")
-    assert preview.status_code == 200
-    assert "Altegio Integration Hub" in preview.text
-    assert "Open the report form" in preview.text
-    assert "/submit/demo-partner?period=" in preview.text
-
     card = client.get(f"/admin/partners/{partner['id']}/edit")
-    assert f"/admin/partners/{partner['id']}/letter/invite" in card.text
-    assert client.get(f"/admin/partners/{partner['id']}/letter/digest").status_code == 404
+    assert 'name="email"' not in card.text
+    assert 'name="report_channel"' not in card.text
+    assert f"/admin/partners/{partner['id']}/letter/invite" not in card.text
+    assert client.get(f"/admin/partners/{partner['id']}/letter/invite").status_code == 404
 
 
 def test_partner_can_submit_without_explaining_connected_inactive(tmp_path: Path):
@@ -1824,7 +1830,7 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     assert saved["legal_country"] == "Poland"
     assert saved["altegio_legal_entity"] == "Open HC"
     assert saved["contact_name"] == "Anna"
-    assert saved["report_channel"] == "email"
+    assert saved["report_channel"] == "telegram"
     assert saved["internal_comment"] == "Проверить новый договор в октябре"
     assert saved["rate"] == 0.30
     assert saved["report_automation_status"] == "automatic"
@@ -1852,7 +1858,11 @@ def test_partner_legal_entity_fields_are_saved(tmp_path: Path):
     archived = client.post(f"/admin/partners/{partner['id']}/archive")
     assert archived.status_code == 200
     assert all(row["id"] != partner["id"] for row in app.state.store.partners())
-    assert client.get(f"/admin/partners/{partner['id']}/edit").status_code == 404
+    archived_profile = client.get(f"/admin/partners/{partner['id']}/edit")
+    assert archived_profile.status_code == 200
+    assert "This partner is archived" in archived_profile.text
+    assert ">Restore<" in archived_profile.text
+    assert 'fieldset class="partner-read-only" disabled' in archived_profile.text
     assert client.get(f"/submit/{saved['token']}").status_code == 404
 
 
@@ -2072,14 +2082,15 @@ def test_notice_texts_are_shared_across_partners(tmp_path: Path, monkeypatch):
     page = client.get("/admin/settings?language=ru")
     assert page.status_code == 200
     assert "Settings" in page.text
-    assert "Outreach bot" in page.text
-    assert "Summary in Telegram" in page.text
+    assert ">Telegram<" in page.text
+    assert "Summary in Telegram</button>" not in page.text
+    assert "Summary in Telegram" not in page.text
     assert "Telegram bot is not connected" in page.text
     assert "Notification texts" in page.text
     assert "Rates to the dollar" not in page.text
     assert "Здравствуйте" in page.text
     home = client.get("/")
-    assert "Outreach bot" not in home.text
+    assert ">Telegram<" not in home.text
     redirected = client.get("/admin/notices?language=ru", follow_redirects=False)
     assert redirected.status_code == 303
     assert "/admin/settings" in redirected.headers["location"]

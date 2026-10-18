@@ -184,7 +184,7 @@ def test_telegram_invite_empty_override_falls_back_to_i18n_default(tmp_path: Pat
     assert "http" not in text
 
 
-def test_email_invite_keeps_existing_link_appended_behaviour(tmp_path: Path):
+def test_invite_without_telegram_chat_is_not_sent(tmp_path: Path):
     store = Store(tmp_path / "test.db")
     pid = store.add_partner(
         name="Mail",
@@ -194,33 +194,20 @@ def test_email_invite_keeps_existing_link_appended_behaviour(tmp_path: Path):
         contact_name="",
         email="finance@example.com",
         telegram="",
-        report_channel="email",
+        report_channel="telegram",
         token="mail",
         rate=0.2,
         currency="USD",
         notice_settings={"language": "ru"},
     )
-
-    letters: list[tuple[str, str, str, str]] = []
     result = send_partner_notice(
         store,
         store.partner(pid),
         "2026-08",
         "invite",
-        mail_sender=lambda to, subject, body, html: letters.append(
-            (to, subject, body, html)
-        ),
         force=True,
     )
-    assert result["status"] == "sent"
-    assert len(letters) == 1
-    _to, subject, body, _html = letters[0]
-    assert subject.startswith("Mail:")
-    # Regression guard: email invite still uses the original Russian wording.
-    assert body.startswith("Здравствуйте")
-    # Regression guard: web-form link must remain appended to the email body.
-    assert "http" in body
-    assert "submit/mail?period=2026-08" in body
+    assert result == {"status": "blocked", "detail": "partner_must_start_bot"}
 
 
 def test_invite_telegram_is_part_of_notice_keys_but_disabled_by_default():
@@ -279,7 +266,7 @@ def test_migration_adds_empty_invite_telegram_to_existing_partners(tmp_path: Pat
     assert keys.count("invite_telegram") == 1
 
 
-def test_settings_handler_stores_invite_telegram_field_separately(tmp_path: Path):
+def test_settings_hides_the_removed_telegram_invitation_controls(tmp_path: Path):
     from fastapi.testclient import TestClient
 
     from revshare.web import create_app
@@ -287,19 +274,11 @@ def test_settings_handler_stores_invite_telegram_field_separately(tmp_path: Path
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
 
-    # GET: the page exposes the new textarea. The i18n ru default appears
-    # verbatim in the textarea — placeholders are kept unsubstituted. The
-    # admin UI labels are rendered in the admin's chosen language (English
-    # by default in tests).
     page = client.get("/admin/settings?language=ru")
     assert page.status_code == 200
-    assert "Telegram invite (overrides default)" in page.text
-    assert "Уважаемый партнёр" in page.text
-    assert "{period}" in page.text
-    # The reset button is present in the admin's language.
-    assert "Reset to default" in page.text
+    assert "Telegram invite (overrides default)" not in page.text
+    assert 'name="notice_message_invite_telegram"' not in page.text
 
-    # POST: empty textarea must be accepted without error and stored as "".
     response = client.post(
         "/admin/notices",
         data={
@@ -311,29 +290,11 @@ def test_settings_handler_stores_invite_telegram_field_separately(tmp_path: Path
                 "",
                 "",
             ],
-            "notice_message_invite_telegram": "",
         },
     )
     assert response.status_code == 200
     store: Store = app.state.store
-    # Empty override stored as "" — never coerced to a default.
-    assert store.setting("notice_text_ru_invite_telegram", "") == ""
-
-    # POST with a non-empty value: stored as-is (no automatic coercion).
-    response = client.post(
-        "/admin/notices",
-        data={
-            "language": "ru",
-            "notice_key": ["invite", "reminder", "last", "overdue"],
-            "notice_message": ["", "", "", ""],
-            "notice_message_invite_telegram": "Custom wording for {period}",
-        },
-    )
-    assert response.status_code == 200
-    assert (
-        store.setting("notice_text_ru_invite_telegram", "")
-        == "Custom wording for {period}"
-    )
+    assert store.notice_templates("ru")["invite"].startswith("Custom invite")
 
 
 def test_supported_languages_include_en_ru_uk():

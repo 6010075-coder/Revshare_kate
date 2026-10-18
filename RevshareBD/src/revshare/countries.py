@@ -106,7 +106,7 @@ ALTEGIO_LEGAL_ENTITIES = [
     "Альт тех",
 ]
 
-REPORT_CHANNELS = ("email", "telegram")
+REPORT_CHANNELS = ("telegram",)
 
 APP_CATEGORIES = (
     "ai_bots",

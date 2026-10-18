@@ -244,7 +244,7 @@ def import_partners_from_sheet(
                 contact_name="",
                 email="",
                 telegram="",
-                report_channel="email",
+                report_channel="telegram",
                 token=secrets.token_urlsafe(18),
                 rate=partner.rate,
                 currency="USD",

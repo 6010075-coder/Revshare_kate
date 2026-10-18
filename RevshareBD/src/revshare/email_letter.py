@@ -248,7 +248,10 @@ def build_letter(
     paragraphs = message_paragraphs(message, link)
     subject = subject_for(notice_key, lang, name, period)
 
-    text_lines = [*paragraphs, "", f"{texts['button']}: {link}", "", deadline_line, ""]
+    text_lines = [*paragraphs]
+    if link:
+        text_lines.extend(["", f"{texts['button']}: {link}"])
+    text_lines.extend(["", deadline_line, ""])
     text_lines.append(f"{texts['prepare_title']}:")
     text_lines.extend(f"- {item}" for item in texts["prepare"])
     text_lines.extend(["", texts["note"], "", texts["signature"], texts["footer"]])
@@ -284,6 +287,16 @@ def render_html(
         for paragraph in paragraphs
     )
     prepare = "".join(f"<li>{escape(item)}</li>" for item in texts["prepare"])
+    link_block = ""
+    if link:
+        link_block = f'''  <tr><td style="padding:10px 28px 0;">
+    <a href="{safe_link}" style="display:inline-block;background:#ffcb00;color:#22222e;font:700 15px/1 Arial,Helvetica,sans-serif;padding:15px 24px;border-radius:12px;text-decoration:none;">{escape(texts["button"])}</a>
+  </td></tr>
+  <tr><td style="padding:14px 28px 0;font:400 12px/1.6 Arial,Helvetica,sans-serif;color:#626c77;">
+    {escape(texts["link_hint"])}<br>
+    <a href="{safe_link}" style="color:#626c77;">{escape(link)}</a>
+  </td></tr>
+'''
     return f"""<!doctype html>
 <html lang="{lang}">
 <head>
@@ -302,13 +315,7 @@ def render_html(
     <h1 style="margin:0 0 14px;font:700 22px/1.3 Arial,Helvetica,sans-serif;color:#22222e;">{escape(title)}</h1>
     {body}
   </td></tr>
-  <tr><td style="padding:10px 28px 0;">
-    <a href="{safe_link}" style="display:inline-block;background:#ffcb00;color:#22222e;font:700 15px/1 Arial,Helvetica,sans-serif;padding:15px 24px;border-radius:12px;text-decoration:none;">{escape(texts["button"])}</a>
-  </td></tr>
-  <tr><td style="padding:14px 28px 0;font:400 12px/1.6 Arial,Helvetica,sans-serif;color:#626c77;">
-    {escape(texts["link_hint"])}<br>
-    <a href="{safe_link}" style="color:#626c77;">{escape(link)}</a>
-  </td></tr>
+{link_block}
   <tr><td style="padding:22px 28px 0;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f0f1f8;border-radius:12px;">
       <tr><td style="padding:16px 18px;">

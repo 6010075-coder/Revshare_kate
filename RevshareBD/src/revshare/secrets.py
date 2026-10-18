@@ -25,8 +25,3 @@ def load_secrets(path: Path | None = None) -> None:
 def telegram_token() -> str:
     load_secrets()
     return os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-
-
-def public_base_url() -> str:
-    load_secrets()
-    return os.getenv("REVSHARE_PUBLIC_URL", "").rstrip("/")
